@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0e141a">
+  <link rel="manifest" href="/static/manifest.json">
+  <link rel="icon" type="image/png" href="/static/icon-192.png">
+  <link rel="apple-touch-icon" href="/static/icon-192.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="OBD-Диагност">
+  <title>OBD-Диагност</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <h1>OBD-Диагност</h1>
+      <p class="subtitle">Коды ошибок и живые параметры с подсказками</p>
+    </div>
+    <div class="status">
+      <span id="source-badge" class="badge">…</span>
+      <span id="health" class="health">Состояние: —</span>
+      <span id="status-text">Подключение…</span>
+    </div>
+  </header>
+
+  <div id="alert" class="alert hidden" role="alert"></div>
+
+  <main>
+    <section class="panel controls">
+      <button id="refresh-btn" type="button">Обновить сейчас</button>
+      <button id="report-btn" class="secondary" type="button">Скачать отчёт</button>
+      <label class="toggle">
+        <input type="checkbox" id="auto-refresh" checked>
+        Автообновление
+      </label>
+      <label class="demo-only">
+        Демо:
+        <select id="scenario">
+          <option value="lean">Бедная смесь</option>
+          <option value="overheat">Перегрев</option>
+          <option value="voltage">Разряд АКБ</option>
+          <option value="misfire">Пропуски зажигания</option>
+          <option value="ok">Всё в порядке</option>
+        </select>
+      </label>
+      <span id="updated" class="updated"></span>
+    </section>
+
+    <section class="panel">
+      <h2>Автомобиль</h2>
+      <div class="vehicle">
+        <input id="make" type="text" placeholder="Марка" autocomplete="off">
+        <input id="model" type="text" placeholder="Модель" autocomplete="off">
+        <input id="year" type="text" placeholder="Год" autocomplete="off">
+        <input id="vin" type="text" placeholder="VIN (17 символов)" maxlength="17" autocomplete="off">
+        <button id="vin-btn" class="secondary" type="button">Определить по VIN</button>
+      </div>
+      <p id="vin-status" class="vin-status"></p>
+    </section>
+
+    <section class="panel">
+      <h2>Текущие параметры</h2>
+      <div id="tiles" class="tiles"></div>
+    </section>
+
+    <section class="panel">
+      <h2>Графики за последнюю минуту</h2>
+      <div class="charts">
+        <figure>
+          <figcaption>Обороты, об/мин</figcaption>
+          <canvas id="rpm-chart" height="140"></canvas>
+        </figure>
+        <figure>
+          <figcaption>Температура ОЖ, °C</figcaption>
+          <canvas id="coolant-chart" height="140"></canvas>
+        </figure>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Ошибки и что проверить</h2>
+      <button id="dtc-btn" class="secondary" type="button">Чтение ошибок по блокам</button>
+      <span id="dtc-status" class="advice-status"></span>
+      <div id="dtc-blocks" class="dtc-blocks"></div>
+      <div id="hints" class="hints"></div>
+    </section>
+
+    <section class="panel">
+      <h2>Рекомендации ИИ</h2>
+      <p class="advice-subtitle">Нейросеть анализирует параметры, коды ошибок и данные автомобиля.</p>
+      <textarea id="symptoms" class="advice-textarea" rows="2" placeholder="Опишите проблему своими словами (необязательно). Например: троит двигатель на холостых оборотах, дёргается при разгоне"></textarea>
+      <button id="voice-btn" class="secondary" type="button">🎤 Сказать проблему</button>
+      <button id="advice-btn" class="secondary" type="button">Спросить ИИ</button>
+      <span id="voice-status" class="advice-status"></span>
+      <span id="advice-status" class="advice-status"></span>
+      <div id="advice-text" class="advice-text">Нажмите кнопку, чтобы получить рекомендацию.</div>
+      <button id="speak-btn" class="secondary" type="button">🔊 Озвучить ответ</button>
+      <div id="part-box" class="part-box hidden">
+        <div class="part-title">Вероятная запчасть: <span id="part-name"></span></div>
+        <div id="part-cost" class="part-cost"></div>
+        <div id="part-links" class="part-links"></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Диагностика по симптомам</h2>
+      <p class="advice-subtitle">Отметьте, что беспокоит, — нейросеть предположит причины. Работает даже без адаптера.</p>
+      <div id="symptom-list" class="symptom-list"></div>
+      <button id="symptom-btn" class="secondary" type="button">Определить причину</button>
+      <span id="symptom-status" class="advice-status"></span>
+      <div id="symptom-result" class="symptom-result hidden"></div>
+    </section>
+
+    <section class="panel">
+      <h2>Уведомления в Telegram</h2>
+      <p class="advice-subtitle">При критической ошибке (например, перегрев) бот пришлёт сообщение на телефон.</p>
+      <div class="vehicle">
+        <input id="tg-chat-id" type="text" placeholder="chat_id" autocomplete="off">
+        <button id="tg-lookup-btn" class="secondary" type="button">Автоопределить</button>
+        <button id="tg-btn" class="secondary" type="button">Подключить</button>
+      </div>
+      <p id="tg-status" class="vin-status"></p>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+  <script>
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("/static/service-worker.js");
+    }
+  </script>
+</body>
+</html>

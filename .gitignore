@@ -1,0 +1,24 @@
+# ===== Python =====
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# ===== Секреты — НИКОГДА не коммитить =====
+token.txt
+.secret_key
+.env
+*.env
+
+# ===== macOS =====
+.DS_Store
+
+# ===== Flutter / Android =====
+build/
+.dart_tool/
+.idea/
+.flutter-plugins-dependencies
+*.iml
+android/.gradle/
+android/local.properties
+android/key.properties
