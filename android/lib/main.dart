@@ -54,6 +54,67 @@ const Map<String, String> tileUnits = {
   "intake_temp": "°C",
 };
 
+/// Протоколы ELM327 в порядке проверки: сначала авто, затем самые частые
+const List<List<String>> _protocols = [
+  ["0", "Автоопределение"],
+  ["6", "CAN 11-бит, 500 кбод"],
+  ["7", "CAN 29-бит, 500 кбод"],
+  ["8", "CAN 11-бит, 250 кбод"],
+  ["9", "CAN 29-бит, 250 кбод"],
+  ["3", "ISO 9141-2"],
+  ["5", "ISO 14230-4 KWP (быстрая инициализация)"],
+  ["4", "ISO 14230-4 KWP (5 baud)"],
+  ["1", "SAE J1850 PWM"],
+  ["2", "SAE J1850 VPW"],
+  ["A", "SAE J1939 CAN"],
+];
+
+/// Марка по первым трём знакам VIN (код производителя)
+const Map<String, String> _vinMakes = {
+  "JTD": "Toyota", "JTE": "Toyota", "JTF": "Toyota", "JTG": "Toyota",
+  "JTH": "Toyota", "JTJ": "Toyota", "JTK": "Toyota", "JTL": "Toyota",
+  "JTM": "Toyota", "JTN": "Toyota", "JTP": "Toyota", "JT2": "Toyota",
+  "JT3": "Toyota", "JT4": "Toyota", "JT5": "Toyota", "JT6": "Toyota",
+  "JT8": "Toyota", "JT1": "Toyota",
+  "JN1": "Nissan", "JN3": "Nissan", "JN6": "Nissan", "JN8": "Nissan",
+  "JNK": "Infiniti", "JNR": "Infiniti", "VSK": "Nissan", "SJN": "Nissan",
+  "JHM": "Honda", "JHL": "Honda", "JHG": "Honda",
+  "1HG": "Honda", "2HG": "Honda", "3HG": "Honda", "5FN": "Honda",
+  "JM1": "Mazda", "JM3": "Mazda", "JMZ": "Mazda",
+  "JF1": "Subaru", "JF2": "Subaru", "4S3": "Subaru", "4S4": "Subaru",
+  "JA3": "Mitsubishi", "JA4": "Mitsubishi", "4A3": "Mitsubishi",
+  "JMB": "Mitsubishi", "JMY": "Mitsubishi", "Z8T": "Mitsubishi",
+  "JS1": "Suzuki", "JS2": "Suzuki", "JS3": "Suzuki", "TSM": "Suzuki",
+  "KMH": "Hyundai", "KM8": "Hyundai", "KMU": "Hyundai", "5NP": "Hyundai",
+  "KNA": "Kia", "KND": "Kia", "KNM": "Kia", "U5Y": "Kia",
+  "KL4": "Daewoo", "KLA": "Daewoo",
+  "WBA": "BMW", "WBS": "BMW", "WBU": "BMW", "WBX": "BMW", "WBY": "BMW",
+  "WDB": "Mercedes-Benz", "WDC": "Mercedes-Benz", "WDD": "Mercedes-Benz",
+  "WDF": "Mercedes-Benz", "W1K": "Mercedes-Benz", "W1N": "Mercedes-Benz",
+  "WAU": "Audi", "WA1": "Audi", "TRU": "Audi", "WUA": "Audi",
+  "WVW": "Volkswagen", "WV1": "Volkswagen", "WV2": "Volkswagen",
+  "3VW": "Volkswagen", "1VW": "Volkswagen", "WVG": "Volkswagen",
+  "TMB": "Skoda", "TMP": "Skoda", "TMT": "Skoda",
+  "VF1": "Renault", "VF2": "Renault", "VFS": "Renault", "VF6": "Renault",
+  "VF3": "Peugeot", "VF7": "Citroen",
+  "YV1": "Volvo", "YV4": "Volvo", "YV2": "Volvo",
+  "SAJ": "Jaguar", "SAL": "Land Rover", "SAD": "Land Rover",
+  "ZFA": "Fiat", "ZFF": "Ferrari", "ZAR": "Alfa Romeo",
+  "VSS": "SEAT", "VWV": "Volkswagen",
+  "1FA": "Ford", "1FB": "Ford", "1FC": "Ford", "1FD": "Ford",
+  "2FA": "Ford", "3FA": "Ford", "WF0": "Ford", "MAJ": "Ford",
+  "1G1": "Chevrolet", "1GC": "Chevrolet", "2G1": "Chevrolet",
+  "1GT": "GMC", "3GT": "GMC",
+  "1C3": "Chrysler", "1C4": "Jeep", "1J4": "Jeep", "1J8": "Jeep",
+  "1B3": "Dodge", "2B3": "Dodge",
+  "5YJ": "Tesla", "7SA": "Tesla",
+  "XTA": "Lada", "XTT": "Lada", "XTU": "Lada", "X9F": "Lada",
+  "XW8": "Volkswagen", "X4X": "BMW",
+  "LVV": "Chery", "LVT": "Chery", "LSV": "Chery",
+  "LB3": "Geely", "L6T": "Geely",
+  "LGW": "Haval", "LVS": "Changan",
+};
+
 class ObdApp extends StatelessWidget {
   const ObdApp({super.key});
 
@@ -94,6 +155,9 @@ class _HomeScreenState extends State<HomeScreen> {
   List<String> _scanResults = [];
   String _debug = ""; // последние сырые байты от адаптера
   String _cmdDebug = ""; // последний разобранный ответ
+  String _protocolName = ""; // определённый протокол связи
+  String _vin = ""; // VIN, прочитанный из ЭБУ
+  String _detectedMake = ""; // марка, определённая по VIN
 
   final StringBuffer _replyBuffer = StringBuffer();
   Completer<String>? _replyCompleter;
@@ -281,8 +345,58 @@ class _HomeScreenState extends State<HomeScreen> {
     await _command("ATE0");
     await _command("ATL0");
     await _command("ATH0");
-    await _command("ATSP0");
     await Future.delayed(const Duration(milliseconds: 200));
+
+    // Автоподбор протокола: автоопределение работает не на всех машинах
+    await _command("ATSP0");
+    await Future.delayed(const Duration(milliseconds: 250));
+
+    for (final protocol in _protocols) {
+      await _command("ATSP${protocol[0]}");
+      await Future.delayed(const Duration(milliseconds: 250));
+      final answer =
+          await _command("0100", timeout: const Duration(seconds: 4));
+      if (answer.contains("41")) {
+        setState(() => _protocolName = protocol[1]);
+        break;
+      }
+    }
+
+    // Определяем марку по VIN из ЭБУ
+    await _readVehicleInfo();
+  }
+
+  Future<void> _readVehicleInfo() async {
+    final answer = await _command("0902", timeout: const Duration(seconds: 6));
+    final codes = <int>[];
+
+    for (final line in answer.split("\n")) {
+      final raw = _parseLine(line);
+      if (raw == null || raw.length < 3) continue;
+      if (raw[0] == 0x49 && raw[1] == 0x02) {
+        for (final byte in raw.sublist(3)) {
+          if (byte >= 0x20 && byte <= 0x7E) codes.add(byte);
+        }
+      }
+    }
+
+    var vin = String.fromCharCodes(codes).trim();
+    if (vin.length >= 17) {
+      vin = vin.substring(vin.length - 17);
+    }
+    final make = vin.length == 17 ? _vinToMake(vin) : "";
+
+    if (mounted) {
+      setState(() {
+        _vin = vin.length == 17 ? vin : "";
+        _detectedMake = make;
+      });
+    }
+  }
+
+  static String _vinToMake(String vin) {
+    final prefix = vin.substring(0, 3).toUpperCase();
+    return _vinMakes[prefix] ?? "";
   }
 
   // ----------------------------------------------------------
@@ -483,6 +597,15 @@ class _HomeScreenState extends State<HomeScreen> {
           const SizedBox(height: 6),
           Text("Адаптер: $_adapterName",
               style: const TextStyle(color: Colors.grey)),
+          if (_detectedMake.isNotEmpty)
+            Text("Автомобиль: $_detectedMake",
+                style: const TextStyle(
+                    color: Color(0xFF35C28F), fontWeight: FontWeight.w600)),
+          if (_vin.isNotEmpty)
+            Text("VIN: $_vin", style: const TextStyle(color: Colors.grey)),
+          if (_protocolName.isNotEmpty)
+            Text("Протокол: $_protocolName",
+                style: const TextStyle(color: Colors.grey)),
           Text(_status, style: const TextStyle(color: Colors.grey)),
           if (_debug.isNotEmpty)
             Padding(
