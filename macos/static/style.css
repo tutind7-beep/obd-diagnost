@@ -289,9 +289,52 @@ select {
 .chart-canvas {
   display: block;
   width: 100%;
-  height: 140px;
+  height: 170px;
   border-radius: 10px;
   background: var(--panel);
+}
+
+.chart-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(6, 10, 14, 0.82);
+  backdrop-filter: blur(3px);
+}
+
+.chart-modal-box {
+  width: min(1000px, 100%);
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--panel);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+}
+
+.chart-modal-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.chart-modal-title {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.chart-modal-canvas {
+  display: block;
+  width: 100%;
+  height: min(60vh, 460px);
+  border-radius: 12px;
+  background: var(--panel-2);
+  cursor: crosshair;
 }
 
 .chart-controls {

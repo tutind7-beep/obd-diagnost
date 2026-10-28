@@ -11,7 +11,6 @@ const TILES = [
   { key: "intake_temp", label: "Темп. воздуха", unit: "°C" },
 ];
 
-const MAX_POINTS = 40;
 const REFRESH_MS = 2500;
 
 // Симптомы для «диагностики по симптомам»
@@ -412,6 +411,9 @@ function renderAlert(data) {
 
 // ---------- Графики: только выбранные пользователем параметры ----------
 
+// Сколько точек храним в истории (при обновлении раз в 2.5 с — около 5 минут)
+const CHART_MAX_POINTS = 120;
+
 function loadChartKeys() {
   try {
     const saved = JSON.parse(localStorage.getItem("obd-charts") || "[]");
@@ -517,6 +519,13 @@ function renderCharts() {
     valueSpan.className = "chart-value";
     valueSpan.id = "chart-value-" + index;
 
+    const expandBtn = document.createElement("button");
+    expandBtn.className = "chart-remove";
+    expandBtn.type = "button";
+    expandBtn.textContent = "⤢";
+    expandBtn.title = "Развернуть график";
+    expandBtn.addEventListener("click", () => openChartModal(key));
+
     const removeBtn = document.createElement("button");
     removeBtn.className = "chart-remove";
     removeBtn.type = "button";
@@ -524,11 +533,11 @@ function renderCharts() {
     removeBtn.title = "Убрать график";
     removeBtn.addEventListener("click", () => removeChart(key));
 
-    header.append(caption, valueSpan, removeBtn);
+    header.append(caption, valueSpan, expandBtn, removeBtn);
 
     const canvas = document.createElement("canvas");
     canvas.className = "chart-canvas";
-    canvas.height = 140;
+    canvas.height = 170;
     canvas.dataset.key = key;
 
     figure.append(header, canvas);
@@ -547,13 +556,13 @@ function drawAllCharts() {
       return;
     }
 
-    const values = state.chartData[key] || [];
-    drawChart(canvas, values, CHART_COLORS[index % CHART_COLORS.length]);
+    const points = state.chartData[key] || [];
+    drawChart(canvas, points, CHART_COLORS[index % CHART_COLORS.length]);
 
     const info = chartInfo(key);
     const valueSpan = document.getElementById("chart-value-" + index);
     if (valueSpan) {
-      const last = values.length ? values[values.length - 1] : null;
+      const last = points.length ? points[points.length - 1].v : null;
       valueSpan.textContent = last === null ? "—" : formatChartValue(last, info);
     }
   });
@@ -565,7 +574,18 @@ function formatChartValue(value, info) {
   return text + " " + (info.unit || "");
 }
 
-function drawChart(canvas, values, color) {
+// Время в формате ЧЧ:ММ:СС
+function formatClock(timestamp) {
+  const date = new Date(timestamp);
+  const pad = (number) => String(number).padStart(2, "0");
+  return pad(date.getHours()) + ":" + pad(date.getMinutes()) + ":" + pad(date.getSeconds());
+}
+
+/**
+ * Рисует график с осями координат.
+ * points — массив {t: время (мс), v: значение}.
+ */
+function drawChart(canvas, points, color) {
   const context = canvas.getContext("2d");
   const ratio = window.devicePixelRatio || 1;
   const width = canvas.clientWidth;
@@ -580,19 +600,111 @@ function drawChart(canvas, values, color) {
   context.setTransform(ratio, 0, 0, ratio, 0, 0);
   context.clearRect(0, 0, width, height);
 
-  if (values.length < 2) {
+  // Отступы под подписи осей
+  const padLeft = 52;
+  const padRight = 12;
+  const padTop = 12;
+  const padBottom = 26;
+
+  const plotWidth = width - padLeft - padRight;
+  const plotHeight = height - padTop - padBottom;
+
+  if (plotWidth <= 0 || plotHeight <= 0) {
     return;
   }
 
-  const min = Math.min(...values);
-  const max = Math.max(...values);
-  const range = max - min || 1;
-  const padding = 10;
-
+  // Оси
+  context.strokeStyle = "#2b3a47";
+  context.lineWidth = 1;
   context.beginPath();
-  values.forEach((value, index) => {
-    const x = padding + ((width - padding * 2) * index) / (values.length - 1);
-    const y = height - padding - ((height - padding * 2) * (value - min)) / range;
+  context.moveTo(padLeft, padTop);
+  context.lineTo(padLeft, padTop + plotHeight);
+  context.lineTo(padLeft + plotWidth, padTop + plotHeight);
+  context.stroke();
+
+  if (points.length < 2) {
+    context.fillStyle = "#92a5b7";
+    context.font = "12px -apple-system, sans-serif";
+    context.fillText("Ждём данные…", padLeft + 8, padTop + plotHeight / 2);
+    return;
+  }
+
+  // Диапазон значений (Y) и времени (X)
+  const values = points.map((point) => point.v);
+  let min = Math.min(...values);
+  let max = Math.max(...values);
+
+  if (min === max) {
+    // Плоская линия: добавляем запас, чтобы она была по центру
+    min = min - 1;
+    max = max + 1;
+  }
+  const span = max - min;
+
+  const timeStart = points[0].t;
+  const timeEnd = points[points.length - 1].t;
+  const timeSpan = Math.max(timeEnd - timeStart, 1);
+
+  // Горизонтальные линии сетки с подписями значений
+  const gridLines = 4;
+  context.font = "11px -apple-system, sans-serif";
+  context.textAlign = "right";
+  context.textBaseline = "middle";
+
+  // Точность подписи зависит от разброса значений
+  const axisDigits = span >= 100 ? 0 : span >= 10 ? 1 : span >= 1 ? 2 : span >= 0.1 ? 3 : 4;
+
+  for (let i = 0; i <= gridLines; i++) {
+    const fraction = i / gridLines;
+    const y = padTop + plotHeight * fraction;
+    const value = max - span * fraction;
+
+    context.strokeStyle = i === gridLines ? "#2b3a47" : "#1f2a35";
+    context.beginPath();
+    context.moveTo(padLeft, y);
+    context.lineTo(padLeft + plotWidth, y);
+    context.stroke();
+
+    context.fillStyle = "#92a5b7";
+    context.fillText(value.toFixed(axisDigits), padLeft - 8, y);
+  }
+
+  // Вертикальные линии сетки с подписями времени.
+  // На узких графиках меньше подписей, чтобы они не наезжали друг на друга.
+  const timeLines = plotWidth < 420 ? 2 : 4;
+  context.textAlign = "center";
+  context.textBaseline = "top";
+
+  for (let i = 0; i <= timeLines; i++) {
+    const fraction = i / timeLines;
+    const x = padLeft + plotWidth * fraction;
+    const time = timeStart + timeSpan * fraction;
+
+    if (i > 0 && i < timeLines) {
+      context.strokeStyle = "#1f2a35";
+      context.beginPath();
+      context.moveTo(x, padTop);
+      context.lineTo(x, padTop + plotHeight);
+      context.stroke();
+    }
+
+    context.fillStyle = "#92a5b7";
+    // Крайние подписи прижимаем, чтобы не вылезали за границы
+    if (i === 0) {
+      context.textAlign = "left";
+    } else if (i === timeLines) {
+      context.textAlign = "right";
+    } else {
+      context.textAlign = "center";
+    }
+    context.fillText(formatClock(time), x, padTop + plotHeight + 6);
+  }
+
+  // Сама линия графика
+  context.beginPath();
+  points.forEach((point, index) => {
+    const x = padLeft + (plotWidth * (point.t - timeStart)) / timeSpan;
+    const y = padTop + plotHeight - (plotHeight * (point.v - min)) / span;
     if (index === 0) {
       context.moveTo(x, y);
     } else {
@@ -604,6 +716,129 @@ function drawChart(canvas, values, color) {
   context.lineWidth = 2;
   context.lineJoin = "round";
   context.stroke();
+
+  // Точка на последнем значении
+  const lastPoint = points[points.length - 1];
+  const lastX = padLeft + (plotWidth * (lastPoint.t - timeStart)) / timeSpan;
+  const lastY = padTop + plotHeight - (plotHeight * (lastPoint.v - min)) / span;
+
+  context.beginPath();
+  context.arc(lastX, lastY, 3.5, 0, Math.PI * 2);
+  context.fillStyle = color;
+  context.fill();
+}
+
+// ---------- Развёрнутый график (для точного просмотра) ----------
+
+let modalState = { key: "", zoom: CHART_MAX_POINTS };
+
+function openChartModal(key) {
+  modalState = { key: key, zoom: CHART_MAX_POINTS };
+
+  const overlay = document.createElement("div");
+  overlay.className = "chart-modal";
+  overlay.id = "chart-modal";
+
+  const box = document.createElement("div");
+  box.className = "chart-modal-box";
+
+  const header = document.createElement("div");
+  header.className = "chart-modal-header";
+
+  const info = chartInfo(key);
+  const title = document.createElement("span");
+  title.className = "chart-modal-title";
+  title.textContent = info.name + ", " + info.unit;
+
+  const current = document.createElement("span");
+  current.className = "chart-value";
+  current.id = "modal-value";
+
+  const zoomOutBtn = document.createElement("button");
+  zoomOutBtn.className = "chart-remove";
+  zoomOutBtn.type = "button";
+  zoomOutBtn.textContent = "−";
+  zoomOutBtn.title = "Показать меньше точек (крупнее)";
+  zoomOutBtn.addEventListener("click", () => changeZoom(-10));
+
+  const zoomInBtn = document.createElement("button");
+  zoomInBtn.className = "chart-remove";
+  zoomInBtn.type = "button";
+  zoomInBtn.textContent = "+";
+  zoomInBtn.title = "Показать больше точек";
+  zoomInBtn.addEventListener("click", () => changeZoom(10));
+
+  const resetBtn = document.createElement("button");
+  resetBtn.className = "chart-remove";
+  resetBtn.type = "button";
+  resetBtn.textContent = "Вся история";
+  resetBtn.addEventListener("click", () => {
+    modalState.zoom = CHART_MAX_POINTS;
+    drawModalChart();
+  });
+
+  const closeBtn = document.createElement("button");
+  closeBtn.className = "chart-remove";
+  closeBtn.type = "button";
+  closeBtn.textContent = "Закрыть";
+  closeBtn.addEventListener("click", closeChartModal);
+
+  header.append(title, current, zoomOutBtn, zoomInBtn, resetBtn, closeBtn);
+
+  const canvas = document.createElement("canvas");
+  canvas.className = "chart-modal-canvas";
+  canvas.id = "modal-chart";
+
+  const hint = document.createElement("p");
+  hint.className = "advice-subtitle";
+  hint.textContent =
+    "Кнопки − и + меняют масштаб. По оси X — время, по оси Y — значение параметра.";
+
+  box.append(header, canvas, hint);
+  overlay.appendChild(box);
+  overlay.addEventListener("click", (event) => {
+    if (event.target === overlay) {
+      closeChartModal();
+    }
+  });
+
+  document.body.appendChild(overlay);
+  drawModalChart();
+}
+
+function closeChartModal() {
+  const overlay = document.getElementById("chart-modal");
+  if (overlay) {
+    overlay.remove();
+  }
+}
+
+function changeZoom(delta) {
+  // Ограничиваем: от 10 точек до всей истории
+  modalState.zoom = Math.max(10, Math.min(CHART_MAX_POINTS, modalState.zoom + delta));
+  drawModalChart();
+}
+
+function drawModalChart() {
+  const canvas = document.getElementById("modal-chart");
+  if (!canvas) {
+    return;
+  }
+
+  const all = state.chartData[modalState.key] || [];
+  const points = all.slice(Math.max(0, all.length - modalState.zoom));
+
+  const index = state.chartKeys.indexOf(modalState.key);
+  const color = CHART_COLORS[(index < 0 ? 0 : index) % CHART_COLORS.length];
+
+  drawChart(canvas, points, color);
+
+  const info = chartInfo(modalState.key);
+  const valueSpan = document.getElementById("modal-value");
+  if (valueSpan) {
+    const last = points.length ? points[points.length - 1].v : null;
+    valueSpan.textContent = last === null ? "—" : formatChartValue(last, info);
+  }
 }
 
 // Запрашивает значения только выбранных параметров и добавляет их в историю
@@ -623,6 +858,7 @@ async function fetchChartValues() {
       return;
     }
 
+    const now = Date.now();
     Object.keys(data.values || {}).forEach((key) => {
       const value = data.values[key];
       if (typeof value !== "number") {
@@ -631,13 +867,16 @@ async function fetchChartValues() {
       if (!state.chartData[key]) {
         state.chartData[key] = [];
       }
-      state.chartData[key].push(value);
-      if (state.chartData[key].length > MAX_POINTS) {
+      state.chartData[key].push({ t: now, v: value });
+      if (state.chartData[key].length > CHART_MAX_POINTS) {
         state.chartData[key].shift();
       }
     });
 
     drawAllCharts();
+    if (document.getElementById("chart-modal")) {
+      drawModalChart();
+    }
   } catch (error) {
     // молча пропускаем: график обновится при следующем цикле
   }
