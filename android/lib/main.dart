@@ -29,6 +29,27 @@ const Map<String, List<String>> pidCommands = {
   "intake_temp": ["010F", "temp"],
 };
 
+/// Расширенный набор параметров: ключ -> [PID, тип расчёта, подпись, единица, группа]
+const List<List<String>> extendedParams = [
+  ["engine_load", "0104", "pct", "Нагрузка двигателя", "%", "Двигатель"],
+  ["throttle_rel", "0145", "pct", "Дроссель (относит.)", "%", "Двигатель"],
+  ["timing", "010E", "timing", "Угол зажигания", "°", "Двигатель"],
+  ["runtime", "011F", "two", "Время работы", "с", "Двигатель"],
+  ["ambient_temp", "0146", "temp", "Темп. снаружи", "°C", "Температуры"],
+  ["catalyst_temp", "013C", "cat", "Темп. катализатора", "°C", "Температуры"],
+  ["fuel_pressure", "010A", "fuelpress", "Давление топлива", "кПа", "Топливо"],
+  ["rail_pressure", "0122", "rail", "Давление в рампе", "кПа", "Топливо"],
+  ["fuel_level", "012F", "pct", "Уровень топлива", "%", "Топливо"],
+  ["fuel_rate", "015E", "fuelrate", "Расход топлива", "л/ч", "Топливо"],
+  ["map", "010B", "byte", "Давление во впуске", "кПа", "Воздух"],
+  ["baro", "0133", "byte", "Атмосферное давление", "кПа", "Воздух"],
+  ["o2_b1s1", "0114", "o2", "Лямбда B1S1", "В", "Датчики кислорода"],
+  ["o2_b1s2", "0115", "o2", "Лямбда B1S2", "В", "Датчики кислорода"],
+  ["o2_b1s3", "0116", "o2", "Лямбда B1S3", "В", "Датчики кислорода"],
+  ["o2_b1s4", "0117", "o2", "Лямбда B1S4", "В", "Датчики кислорода"],
+  ["dist_cleared", "0131", "two", "Пробег после сброса", "км", "Пробег"],
+];
+
 // Подписи для плиток
 const Map<String, String> tileLabels = {
   "rpm": "Обороты",
@@ -158,6 +179,8 @@ class _HomeScreenState extends State<HomeScreen> {
   String _protocolName = ""; // определённый протокол связи
   String _vin = ""; // VIN, прочитанный из ЭБУ
   String _detectedMake = ""; // марка, определённая по VIN
+  Map<String, double?> _extended = {}; // расширенные параметры
+  String _extStatus = ""; // статус чтения расширенных параметров
 
   final StringBuffer _replyBuffer = StringBuffer();
   Completer<String>? _replyCompleter;
@@ -451,6 +474,31 @@ class _HomeScreenState extends State<HomeScreen> {
     if (kind == "maf" && payload.length >= 2) {
       return (payload[0] * 256 + payload[1]) / 100;
     }
+    // --- расширенные параметры ---
+    if (kind == "pct" && payload.isNotEmpty) {
+      return payload[0] * 100 / 255;
+    }
+    if (kind == "timing" && payload.isNotEmpty) {
+      return payload[0] / 2 - 64;
+    }
+    if (kind == "two" && payload.length >= 2) {
+      return (payload[0] * 256 + payload[1]).toDouble();
+    }
+    if (kind == "cat" && payload.length >= 2) {
+      return (payload[0] * 256 + payload[1]) / 10 - 40;
+    }
+    if (kind == "fuelpress" && payload.isNotEmpty) {
+      return payload[0] * 3;
+    }
+    if (kind == "rail" && payload.length >= 2) {
+      return (payload[0] * 256 + payload[1]) * 0.079;
+    }
+    if (kind == "fuelrate" && payload.length >= 2) {
+      return (payload[0] * 256 + payload[1]) / 20;
+    }
+    if (kind == "o2" && payload.isNotEmpty) {
+      return payload[0] / 200;
+    }
     return null;
   }
 
@@ -512,6 +560,52 @@ class _HomeScreenState extends State<HomeScreen> {
     });
   }
 
+  /// Стирает коды ошибок из блоков управления (режим 04).
+  Future<void> _clearDtc() async {
+    setState(() => _status = "Стираю ошибки…");
+    final answer = await _command("04", timeout: const Duration(seconds: 6));
+    final text = answer.replaceAll(RegExp(r"\s"), "").toUpperCase();
+    final ok = text.contains("44") || text.startsWith("OK");
+
+    setState(() {
+      _status = ok ? "Ошибки стёрты" : "Не удалось стереть ошибки";
+      if (ok) _dtcCodes = [];
+    });
+
+    if (ok) {
+      await _readPids();
+    }
+  }
+
+  /// Читает расширенный набор параметров.
+  Future<void> _readExtended() async {
+    setState(() => _extStatus = "Читаю все датчики…");
+    final values = <String, double?>{};
+
+    for (final param in extendedParams) {
+      final key = param[0];
+      final pid = param[1];
+      final kind = param[2];
+      final answer = await _command(pid, timeout: const Duration(seconds: 2));
+
+      final expectedPid = int.parse(pid.substring(2), radix: 16);
+      for (final line in answer.split("\n")) {
+        final raw = _parseLine(line);
+        if (raw != null &&
+            raw.length >= 3 &&
+            raw[0] == 0x41 &&
+            raw[1] == expectedPid) {
+          values[key] = _parsePidValue(kind, raw.sublist(2));
+        }
+      }
+    }
+
+    setState(() {
+      _extended = values;
+      _extStatus = "Готово";
+    });
+  }
+
   String _decodeDtc(int first, int second) {
     if (first == 0 && second == 0) return "";
     const letters = ["P", "C", "B", "U"];
@@ -559,6 +653,8 @@ class _HomeScreenState extends State<HomeScreen> {
             _liveTiles(),
             const SizedBox(height: 16),
             _dtcSection(),
+            const SizedBox(height: 16),
+            _extendedSection(),
             const SizedBox(height: 16),
             _scanSection(),
           ],
@@ -683,9 +779,22 @@ class _HomeScreenState extends State<HomeScreen> {
           const Text("Ошибки",
               style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
           const SizedBox(height: 10),
-          ElevatedButton(
-            onPressed: _connected ? _readDtc : null,
-            child: const Text("Чтение ошибок"),
+          Row(
+            children: [
+              ElevatedButton(
+                onPressed: _connected ? _readDtc : null,
+                child: const Text("Чтение ошибок"),
+              ),
+              const SizedBox(width: 10),
+              ElevatedButton(
+                onPressed: _connected ? _confirmClear : null,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0x33E5484D),
+                  foregroundColor: const Color(0xFFFF9A9C),
+                ),
+                child: const Text("Стереть"),
+              ),
+            ],
           ),
           const SizedBox(height: 10),
           if (_dtcCodes.isEmpty)
@@ -709,6 +818,123 @@ class _HomeScreenState extends State<HomeScreen> {
                       ))
                   .toList(),
             ),
+        ],
+      ),
+    );
+  }
+
+  /// Спрашивает подтверждение и стирает ошибки.
+  Future<void> _confirmClear() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text("Стереть ошибки?"),
+        content: const Text(
+          "Погаснет лампа Check Engine. Если неисправность не устранена, "
+          "ошибка появится снова. Также сбросится готовность к техосмотру.",
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text("Отмена"),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text("Стереть"),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed == true) {
+      await _clearDtc();
+    }
+  }
+
+  Widget _extendedSection() {
+    // Группируем параметры по системам автомобиля
+    final groups = <String, List<List<String>>>{};
+    for (final param in extendedParams) {
+      groups.putIfAbsent(param[4], () => []).add(param);
+    }
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFF172029),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFF26333F)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text("Все параметры",
+              style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 6),
+          const Text("Полный набор датчиков: чтение занимает несколько секунд.",
+              style: TextStyle(fontSize: 12, color: Colors.grey)),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              ElevatedButton(
+                onPressed: _connected ? _readExtended : null,
+                child: const Text("Прочитать все"),
+              ),
+              const SizedBox(width: 10),
+              Text(_extStatus, style: const TextStyle(color: Colors.grey)),
+            ],
+          ),
+          const SizedBox(height: 12),
+          ...groups.entries.map((entry) {
+            final rows = entry.value
+                .where((param) => _extended[param[0]] != null)
+                .toList();
+            if (rows.isEmpty) {
+              return const SizedBox.shrink();
+            }
+
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(entry.key,
+                    style: const TextStyle(
+                        fontSize: 12,
+                        color: Colors.grey,
+                        fontWeight: FontWeight.w600)),
+                const SizedBox(height: 6),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: rows.map((param) {
+                    final value = _extended[param[0]]!;
+                    return Container(
+                      width: 150,
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF1F2A35),
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: const Color(0xFF26333F)),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(param[3],
+                              style: const TextStyle(
+                                  fontSize: 11, color: Colors.grey)),
+                          const SizedBox(height: 2),
+                          Text("${_format(value)} ${param[4]}",
+                              style: const TextStyle(
+                                  fontSize: 16, fontWeight: FontWeight.bold)),
+                        ],
+                      ),
+                    );
+                  }).toList(),
+                ),
+                const SizedBox(height: 12),
+              ],
+            );
+          }),
         ],
       ),
     );
