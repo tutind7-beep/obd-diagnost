@@ -2,6 +2,15 @@
 
 Приложение для диагностики автомобиля через OBD-II адаптер с советами ИИ.
 
+## Скачать Android-приложение
+
+Последняя версия (файл `.apk`):
+
+**https://github.com/tutind7-beep/obd-diagnost/releases/latest/download/obd-diagnost-v1.0.0.apk**
+
+Установка: скачайте файл на телефон, откройте его и разрешите установку из этого источника.
+Все версии — в разделе [Releases](https://github.com/tutind7-beep/obd-diagnost/releases).
+
 ## Состав репозитория
 
 | Папка | Что это |
