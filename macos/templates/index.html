@@ -110,6 +110,20 @@
     </section>
 
     <section class="panel">
+      <h2>Блоки управления (профиль марки)</h2>
+      <p class="advice-subtitle">
+        Читает ошибки не только из двигателя, но и из коробки и других блоков.
+        Адреса блоков зависят от модели и года — часть блоков может не ответить.
+      </p>
+      <div class="vehicle">
+        <select id="ecu-make"></select>
+        <button id="ecu-scan-btn" class="secondary" type="button">Сканировать блоки</button>
+        <span id="ecu-status" class="advice-status"></span>
+      </div>
+      <div id="ecu-result" class="readiness-result hidden"></div>
+    </section>
+
+    <section class="panel">
       <h2>Готовность к техосмотру</h2>
       <p class="advice-subtitle">Показывает, завершены ли самопроверки систем автомобиля.</p>
       <button id="readiness-btn" class="secondary" type="button">Проверить готовность</button>

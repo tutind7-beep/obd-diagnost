@@ -26,6 +26,7 @@ from obd_pids import (
     parse_freeze_pid,
     parse_pid_answer,
     parse_readiness,
+    parse_uds_dtcs,
 )
 
 # UUID сервисов/характеристик стандартного BLE-ELM327
@@ -537,6 +538,69 @@ class BLEOBD:
                         }
                     break
         return result
+
+    def read_module_dtcs(self, request_id: str, response_id: str,
+                         protocol: str = "uds") -> list[str]:
+        """Читает коды ошибок из отдельного блока по его CAN-адресу.
+
+        request_id — адрес запроса (например 7E1), response_id — адрес ответа (7E9).
+        protocol — "uds" (современные машины) или "kwp" (постарше).
+        """
+        # Настраиваем адресацию и автоматическое управление потоком
+        self.command(f"ATSH{request_id}", 1)
+        self.command(f"ATCRA{response_id}", 1)
+        self.command("ATCAF1", 1)
+        self.command(f"ATFCSH{request_id}", 1)
+        self.command("ATFCSD300000", 1)
+        self.command("ATFCSM1", 1)
+
+        codes: list[str] = []
+        try:
+            if protocol == "kwp":
+                answer = self.command("1802FF00", 4)
+                codes = parse_uds_dtcs(answer)
+                if not codes:
+                    codes = parse_dtc_answer(self.command("03", 3))
+            else:
+                codes = parse_uds_dtcs(self.command("1902FF", 4))
+                if not codes:
+                    # Часть машин отвечает на обычный запрос режима 03
+                    codes = parse_dtc_answer(self.command("03", 3))
+        finally:
+            # Возвращаем настройки обратно, чтобы не сломать обычное чтение
+            self.command("ATFCSM0", 1)
+            self.command("ATCRA", 1)
+            self.command("ATSH7DF", 1)
+            self.command("ATCAF1", 1)
+
+        return codes
+
+    def scan_modules(self, modules: list[dict]) -> list[dict]:
+        """Перебирает блоки профиля и возвращает те, что ответили."""
+        results = []
+        for module in modules:
+            request_id = module.get("request", "")
+            response_id = module.get("response", "")
+            if not request_id or not response_id:
+                continue
+
+            try:
+                codes = self.read_module_dtcs(
+                    request_id, response_id, module.get("protocol", "uds")
+                )
+            except Exception:
+                continue
+
+            results.append(
+                {
+                    "name": module.get("name", f"Блок {request_id}"),
+                    "request": request_id,
+                    "response": response_id,
+                    "codes": codes,
+                    "answered": True,
+                }
+            )
+        return results
 
     def read_all(self) -> tuple[list[str], dict]:
         codes = self.read_dtcs()

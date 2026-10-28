@@ -153,6 +153,24 @@ class DemoSource:
                 values[key] = _demo_value(key)
         return values
 
+    def scan_modules(self, modules: list[dict]) -> list[dict]:
+        """Демонстрационный скан блоков: двигатель отвечает, остальные — нет."""
+        codes, _ = self.read()
+        results = []
+        for module in modules:
+            name = module.get("name", "")
+            if module.get("response") == "7E8":
+                results.append(
+                    {
+                        "name": name,
+                        "request": module.get("request", ""),
+                        "response": module.get("response", ""),
+                        "codes": list(codes),
+                        "answered": True,
+                    }
+                )
+        return results
+
     def read_readiness(self) -> dict:
         """Демонстрационная готовность систем."""
         codes, _ = self.read()

@@ -514,3 +514,42 @@ def parse_freeze_pid(payload: bytes, pid: str) -> float | str | None:
         return info(data)
     except (IndexError, TypeError):
         return None
+
+
+# ---------------------------------------------------------------------------
+#  Коды из отдельных блоков (UDS, ISO 14229 — сервис 0x19)
+# ---------------------------------------------------------------------------
+
+def parse_uds_dtcs(text: str) -> list[str]:
+    """Достаёт коды ошибок из ответа UDS (сервис 19, подфункция 02).
+
+    Ответ выглядит как «59 02 <маска> <код1: 3 байта> <код2: 3 байта>…».
+    """
+    codes: list[str] = []
+
+    for line in text.splitlines():
+        cleaned = "".join(line.split()).replace(">", "").upper()
+        if not cleaned or any(ch not in HEX_CHARS for ch in cleaned):
+            continue
+
+        marker = cleaned.find("5902")
+        if marker < 0:
+            continue
+
+        data = cleaned[marker + 4:]
+        if len(data) < 8:
+            continue
+
+        data = data[2:]  # первый байт после подфункции — маска статусов
+
+        for index in range(0, len(data) - 5, 6):
+            chunk = data[index:index + 6]
+            try:
+                raw = bytes.fromhex(chunk)
+            except ValueError:
+                continue
+            code = decode_dtc(raw[0], raw[1])
+            if code and code not in codes:
+                codes.append(code)
+
+    return codes

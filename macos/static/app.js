@@ -62,6 +62,10 @@ const elements = {
   chartClear: document.getElementById("chart-clear"),
   chartsContainer: document.getElementById("charts-container"),
   chartsEmpty: document.getElementById("charts-empty"),
+  ecuMake: document.getElementById("ecu-make"),
+  ecuScanBtn: document.getElementById("ecu-scan-btn"),
+  ecuStatus: document.getElementById("ecu-status"),
+  ecuResult: document.getElementById("ecu-result"),
   readinessBtn: document.getElementById("readiness-btn"),
   readinessStatus: document.getElementById("readiness-status"),
   readinessResult: document.getElementById("readiness-result"),
@@ -1389,6 +1393,107 @@ elements.adapterConnect.addEventListener("click", async () => {
   }
 });
 
+// ---------- Блоки управления по профилю ----------
+async function loadEcuBrands() {
+  try {
+    const response = await fetch("/api/ecu/profiles", { cache: "no-store" });
+    const data = await response.json();
+
+    elements.ecuMake.textContent = "";
+    const empty = document.createElement("option");
+    empty.value = "";
+    empty.textContent = "Типовой профиль";
+    elements.ecuMake.appendChild(empty);
+
+    (data.brands || []).forEach((brand) => {
+      const option = document.createElement("option");
+      option.value = brand;
+      option.textContent = brand;
+      elements.ecuMake.appendChild(option);
+    });
+
+    if (state.car.make) {
+      elements.ecuMake.value = state.car.make;
+    }
+  } catch (error) {
+    // список марок не критичен
+  }
+}
+
+elements.ecuScanBtn.addEventListener("click", async () => {
+  const make = elements.ecuMake.value;
+  elements.ecuStatus.textContent = "Сканирую блоки…";
+  elements.ecuScanBtn.disabled = true;
+  elements.ecuResult.classList.add("hidden");
+
+  try {
+    const response = await fetch("/api/ecu/scan", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ make: make }),
+    });
+    const data = await response.json();
+
+    if (data.error) {
+      elements.ecuStatus.textContent = data.error;
+      return;
+    }
+
+    renderEcuModules(data);
+    elements.ecuStatus.textContent = "Проверено блоков: " + data.checked;
+  } catch (error) {
+    elements.ecuStatus.textContent = "Сервер недоступен: " + error.message;
+  } finally {
+    elements.ecuScanBtn.disabled = false;
+  }
+});
+
+function renderEcuModules(data) {
+  elements.ecuResult.textContent = "";
+  elements.ecuResult.classList.remove("hidden");
+
+  const modules = data.modules || [];
+  if (!modules.length) {
+    const empty = document.createElement("p");
+    empty.className = "empty";
+    empty.textContent =
+      "Ни один блок профиля не ответил. Попробуйте другую марку или включите зажигание.";
+    elements.ecuResult.appendChild(empty);
+    return;
+  }
+
+  modules.forEach((module) => {
+    const card = document.createElement("div");
+    card.className = "dtc-block";
+
+    const title = document.createElement("div");
+    title.className = "dtc-block-title";
+    title.textContent =
+      module.name + " (" + module.request + " → " + module.response + ")";
+    card.appendChild(title);
+
+    const codes = module.codes || [];
+    if (!codes.length) {
+      const ok = document.createElement("div");
+      ok.className = "readiness-row ok";
+      ok.textContent = "Ошибок нет";
+      card.appendChild(ok);
+    } else {
+      const list = document.createElement("div");
+      list.className = "dtc-codes";
+      codes.forEach((code) => {
+        const pill = document.createElement("span");
+        pill.className = "dtc-code";
+        pill.textContent = code;
+        list.appendChild(pill);
+      });
+      card.appendChild(list);
+    }
+
+    elements.ecuResult.appendChild(card);
+  });
+}
+
 // ---------- Готовность к техосмотру ----------
 elements.readinessBtn.addEventListener("click", async () => {
   elements.readinessStatus.textContent = "Проверяю…";
@@ -1725,6 +1830,8 @@ if (savedTgChatId) {
   elements.tgChatId.value = savedTgChatId;
   tgConnect(true);
 }
+
+loadEcuBrands();
 
 fetchLive();
 setAutoRefresh(true);

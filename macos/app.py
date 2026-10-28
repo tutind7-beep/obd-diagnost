@@ -20,6 +20,7 @@ from io import BytesIO
 from flask import Flask, jsonify, render_template, request, send_file
 
 from diagnostics import build_hints, normalize_codes
+from ecu_profiles import list_brands, profile_for
 from ble_source import BLESource
 from obd_pids import GROUP_ORDER, PID_CATALOG
 from obd_service import DemoSource, RealSource
@@ -605,6 +606,39 @@ def api_connect():
         return jsonify({"error": str(error)}), 503
 
     return jsonify({"ok": True, "type": source.name, "error": None})
+
+
+@app.get("/api/ecu/profiles")
+def api_ecu_profiles():
+    """Список марок, для которых есть профили блоков."""
+    return jsonify({"brands": list_brands()})
+
+
+@app.post("/api/ecu/scan")
+def api_ecu_scan():
+    """Сканирует блоки управления по профилю марки."""
+    data = request.get_json(silent=True) or {}
+    make = (data.get("make") or "").strip()
+
+    modules = profile_for(make)
+    active = current_source()
+
+    if not hasattr(active, "scan_modules"):
+        return jsonify({"error": "Источник данных не поддерживает сканирование блоков."}), 400
+
+    try:
+        results = active.scan_modules(modules)
+    except Exception as error:
+        return jsonify({"error": str(error)}), 503
+
+    return jsonify(
+        {
+            "make": make or "типовой профиль",
+            "modules": results,
+            "checked": len(modules),
+            "error": None,
+        }
+    )
 
 
 @app.get("/api/readiness")

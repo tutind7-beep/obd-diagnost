@@ -91,6 +91,17 @@ class BLESource:
                 self._last_error = str(error)
                 raise
 
+    def scan_modules(self, modules: list[dict]) -> list[dict]:
+        """Сканирует блоки управления по профилю."""
+        with self._lock:
+            self._ensure_connected()
+            try:
+                return self._obd.scan_modules(modules)
+            except Exception as error:
+                self._connected = False
+                self._last_error = str(error)
+                raise
+
     def read_readiness(self) -> dict:
         """Готовность систем к техосмотру."""
         with self._lock:

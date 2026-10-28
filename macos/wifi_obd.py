@@ -20,6 +20,7 @@ from obd_pids import (
     parse_pid_answer,
     parse_readiness,
     parse_response_line,
+    parse_uds_dtcs,
 )
 
 # Типичные адреса Wi-Fi-адаптеров
@@ -217,6 +218,59 @@ class WiFiOBD:
                         result[key] = {"label": label, "unit": unit, "value": value}
                     break
         return result
+
+    def read_module_dtcs(self, request_id: str, response_id: str,
+                         protocol: str = "uds") -> list[str]:
+        """Коды ошибок из отдельного блока по CAN-адресу."""
+        self.command(f"ATSH{request_id}", 1)
+        self.command(f"ATCRA{response_id}", 1)
+        self.command("ATCAF1", 1)
+        self.command(f"ATFCSH{request_id}", 1)
+        self.command("ATFCSD300000", 1)
+        self.command("ATFCSM1", 1)
+
+        codes: list[str] = []
+        try:
+            if protocol == "kwp":
+                codes = parse_uds_dtcs(self.command("1802FF00", 4))
+                if not codes:
+                    codes = parse_dtc_answer(self.command("03", 3))
+            else:
+                codes = parse_uds_dtcs(self.command("1902FF", 4))
+                if not codes:
+                    codes = parse_dtc_answer(self.command("03", 3))
+        finally:
+            self.command("ATFCSM0", 1)
+            self.command("ATCRA", 1)
+            self.command("ATSH7DF", 1)
+            self.command("ATCAF1", 1)
+
+        return codes
+
+    def scan_modules(self, modules: list[dict]) -> list[dict]:
+        """Перебирает блоки профиля и возвращает ответившие."""
+        results = []
+        for module in modules:
+            request_id = module.get("request", "")
+            response_id = module.get("response", "")
+            if not request_id or not response_id:
+                continue
+            try:
+                codes = self.read_module_dtcs(
+                    request_id, response_id, module.get("protocol", "uds")
+                )
+            except Exception:
+                continue
+            results.append(
+                {
+                    "name": module.get("name", f"Блок {request_id}"),
+                    "request": request_id,
+                    "response": response_id,
+                    "codes": codes,
+                    "answered": True,
+                }
+            )
+        return results
 
     def read_all(self) -> tuple[list[str], dict]:
         return self.read_dtcs(), self.read_pids()
