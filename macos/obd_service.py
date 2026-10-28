@@ -6,6 +6,8 @@ import random
 import threading
 import time
 
+from obd_pids import PID_CATALOG
+
 # Какие параметры читаем с адаптера: имя в отчёте -> команда python-OBD
 COMMANDS = [
     ("rpm", "RPM"),
@@ -140,6 +142,17 @@ class DemoSource:
 
         return list(scenario["codes"]), live
 
+    def read_extended(self) -> dict:
+        """Демонстрационные значения для всех параметров каталога."""
+        _, live = self.read()
+        values = {}
+        for key in PID_CATALOG:
+            if key in live:
+                values[key] = live[key]
+            else:
+                values[key] = _demo_value(key)
+        return values
+
     def close(self) -> None:
         pass
 
@@ -210,6 +223,16 @@ class RealSource:
 
         return codes, live
 
+    def clear_dtcs(self) -> bool:
+        """Стирает коды ошибок (режим 04)."""
+        with self._lock:
+            if self._connection is None:
+                raise RuntimeError("Адаптер не подключён.")
+            import obd
+
+            response = self._connection.query(obd.commands.CLEAR_DTC)
+            return not response.is_null()
+
     def close(self) -> None:
         with self._lock:
             if self._connection is not None:
@@ -223,3 +246,23 @@ def _read_value(response):
         return None
     value = response.value
     return getattr(value, "magnitude", value)
+
+
+# Демонстрационные значения для параметров, которых нет в сценарии
+DEMO_EXTRA = {
+    "engine_load": 18.5, "throttle_rel": 4.2, "timing": 12.5, "runtime": 640.0,
+    "ambient_temp": 24.0, "catalyst_temp": 420.0,
+    "fuel_trim_short_2": 1.2, "fuel_trim_long_2": -0.8,
+    "fuel_pressure": 330.0, "rail_pressure": 4200.0, "rail_gauge": 3800.0,
+    "fuel_level": 62.0, "fuel_rate": 1.1,
+    "map": 34.0, "baro": 101.0, "afr": 14.6,
+    "o2_b1s1": 0.45, "o2_b1s2": 0.62, "o2_b1s3": 0.41, "o2_b1s4": 0.58,
+    "dist_mil": 0.0, "dist_cleared": 120.0, "time_mil": 0.0,
+}
+
+
+def _demo_value(key: str) -> float:
+    """Возвращает демонстрационное значение параметра с небольшим шумом."""
+    base = DEMO_EXTRA.get(key, 0.0)
+    jitter = base * 0.02
+    return round(base + random.uniform(-jitter, jitter), 2)

@@ -18,23 +18,22 @@ import objc
 from Foundation import NSData
 from libdispatch import dispatch_queue_create
 
+from obd_pids import (
+    PID_CATALOG,
+    CORE_KEYS,
+    parse_dtc_answer,
+    parse_pid_answer,
+)
+
 # UUID сервисов/характеристик стандартного BLE-ELM327
 SERVICE_FFF0 = "FFF0"
 CHAR_RX = "FFF2"  # сюда пишем AT-команды
 CHAR_TX = "FFF1"  # отсюда приходят ответы
 
 # PID-команды: ключ -> (команда, способ разбора)
-PID_COMMANDS = {
-    "rpm": ("010C", "rpm"),
-    "coolant": ("0105", "temp"),
-    "speed": ("010D", "byte"),
-    "voltage": ("0142", "voltage"),
-    "fuel_trim_short": ("0106", "trim"),
-    "fuel_trim_long": ("0107", "trim"),
-    "throttle": ("0111", "throttle"),
-    "maf": ("0110", "maf"),
-    "intake_temp": ("010F", "temp"),
-}
+# PID-команды: ключ -> (команда, способ разбора).
+# Каталог параметров общий с Wi-Fi-адаптером — лежит в obd_pids.
+PID_COMMANDS = {key: (info["pid"], key) for key, info in PID_CATALOG.items()}
 
 
 HEX_CHARS = set("0123456789ABCDEF")
@@ -116,6 +115,64 @@ def vin_to_make(vin: str) -> str:
     if len(vin) < 3:
         return ""
     return VIN_MAKES.get(vin[:3], "")
+
+
+def list_serial_ports() -> list[str]:
+    """Список последовательных портов, похожих на OBD-адаптеры.
+
+    Исключаем системные отладочные порты и аудиоустройства.
+    """
+    import glob
+
+    skip_parts = ("debug-console", "wlan-debug", "Bluetooth-Incoming-Port")
+    ports = []
+    for path in sorted(glob.glob("/dev/tty.*") + glob.glob("/dev/cu.*")):
+        name = path.rsplit("/", 1)[-1]
+        if any(part in name for part in skip_parts):
+            continue
+        if name.startswith(("tty.Bluetooth", "cu.Bluetooth")):
+            continue
+        ports.append(path)
+    return ports
+
+
+def scan_ble_devices(seconds: float = 6.0) -> list[str]:
+    """Быстрое сканирование BLE: возвращает имена найденных устройств."""
+    import time as _time
+
+    from Foundation import NSDate, NSRunLoop
+
+    found: dict[str, int] = {}
+
+    class _Scanner:
+        def __init__(self):
+            self.manager = CoreBluetooth.CBCentralManager.alloc().initWithDelegate_queue_options_(
+                self, None, None
+            )
+
+        def centralManagerDidUpdateState_(self, manager):
+            if manager.state() == 5:
+                manager.scanForPeripheralsWithServices_options_(None, None)
+
+        def centralManager_didDiscoverPeripheral_advertisementData_RSSI_(
+            self, manager, peripheral, ad_data, rssi
+        ):
+            name = (peripheral.name() or "").strip()
+            if name:
+                found[name] = rssi
+
+    scanner = _Scanner()
+    NSRunLoop.currentRunLoop().runUntilDate_(
+        NSDate.dateWithTimeIntervalSinceNow_(seconds)
+    )
+    try:
+        scanner.manager.stopScan()
+    except Exception:
+        pass
+
+    _time.sleep(0.1)
+    # Сортируем по силе сигнала: ближайшие устройства первыми
+    return [name for name, _ in sorted(found.items(), key=lambda item: -item[1])]
 
 
 def _parse_response_line(line: str) -> bytes | None:
@@ -355,34 +412,37 @@ class BLEOBD:
             "protocol": self.protocol,
         }
 
-    def read_pid(self, pid: str, kind: str) -> float | None:
+    def read_pid(self, pid: str, kind: str = "") -> float | None:
         answer = self.command(pid, 1.2)
-        expected_pid = int(pid[-2:], 16)
-        for line in answer.splitlines():
-            raw = _parse_response_line(line)
-            if raw and len(raw) >= 3 and raw[0] == 0x41 and raw[1] == expected_pid:
-                return _parse_pid(kind, raw[2:])
-        return None
+        return parse_pid_answer(answer, pid)
 
     def read_pids(self) -> dict:
-        """Читает только параметры (без кодов ошибок) — быстрый цикл."""
+        """Читает основные параметры (быстрый цикл)."""
         live = {}
-        for key, (pid, kind) in PID_COMMANDS.items():
-            live[key] = self.read_pid(pid, kind)
+        for key in CORE_KEYS:
+            live[key] = self.read_pid(PID_CATALOG[key]["pid"])
+        return live
+
+    def read_pids_extended(self) -> dict:
+        """Читает все параметры каталога (полный цикл, медленнее)."""
+        live = {}
+        for key, info in PID_CATALOG.items():
+            live[key] = self.read_pid(info["pid"])
         return live
 
     def read_dtcs(self) -> list[str]:
         answer = self.command("03", 2)
-        codes = []
-        for line in answer.splitlines():
-            raw = _parse_response_line(line)
-            if raw and raw[0] == 0x43:
-                data = raw[1:]
-                for i in range(0, len(data) - 1, 2):
-                    code = self._decode_dtc(data[i], data[i + 1])
-                    if code:
-                        codes.append(code)
-        return codes
+        return parse_dtc_answer(answer)
+
+    def clear_dtcs(self) -> bool:
+        """Стирает коды ошибок из блоков управления (режим 04).
+
+        Возвращает True, если адаптер подтвердил стирание.
+        """
+        answer = self.command("04", 5)
+        text = "".join(answer.split()).upper()
+        # Успешный ответ: «44» (режим 04 + 0x40); некоторые адаптеры отвечают OK
+        return "44" in text or text.startswith("OK")
 
     def read_dtcs_detailed(self) -> dict:
         """Читает коды ошибок, группируя их по блокам управления (ECU).
@@ -449,9 +509,7 @@ class BLEOBD:
 
     def read_all(self) -> tuple[list[str], dict]:
         codes = self.read_dtcs()
-        live = {}
-        for key, (pid, kind) in PID_COMMANDS.items():
-            live[key] = self.read_pid(pid, kind)
+        live = self.read_pids()
         return codes, live
 
     def close(self):

@@ -79,6 +79,28 @@ class BLESource:
             self._last_read = now
             return self._codes, live
 
+    def clear_dtcs(self) -> bool:
+        """Стирает коды ошибок из блоков управления (режим 04)."""
+        with self._lock:
+            self._ensure_connected()
+            try:
+                return self._obd.clear_dtcs()
+            except Exception as error:
+                self._connected = False
+                self._last_error = str(error)
+                raise
+
+    def read_extended(self) -> dict:
+        """Читает все параметры каталога (для расширенного экрана)."""
+        with self._lock:
+            self._ensure_connected()
+            try:
+                return self._obd.read_pids_extended()
+            except Exception as error:
+                self._connected = False
+                self._last_error = str(error)
+                raise
+
     def read_dtcs_detailed(self) -> dict:
         """Читает коды ошибок по блокам управления (по требованию кнопки)."""
         with self._lock:

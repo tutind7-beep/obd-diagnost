@@ -59,8 +59,8 @@ const elements = {
   voiceBtn: document.getElementById("voice-btn"),
   voiceStatus: document.getElementById("voice-status"),
   speakBtn: document.getElementById("speak-btn"),
-  make: document.getElementById("make"),
-  model: document.getElementById("model"),
+  make: document.getElementById("make-select"),
+  model: document.getElementById("model-select"),
   year: document.getElementById("year"),
   vin: document.getElementById("vin"),
   vinBtn: document.getElementById("vin-btn"),
@@ -75,8 +75,17 @@ const elements = {
   symptomStatus: document.getElementById("symptom-status"),
   symptomResult: document.getElementById("symptom-result"),
   dtcBtn: document.getElementById("dtc-btn"),
+  dtcClearBtn: document.getElementById("dtc-clear-btn"),
   dtcStatus: document.getElementById("dtc-status"),
   dtcBlocks: document.getElementById("dtc-blocks"),
+  adapterType: document.getElementById("adapter-type"),
+  adapterList: document.getElementById("adapter-list"),
+  adapterRefresh: document.getElementById("adapter-refresh"),
+  adapterConnect: document.getElementById("adapter-connect"),
+  adapterStatus: document.getElementById("adapter-status"),
+  paramsBtn: document.getElementById("params-btn"),
+  paramsStatus: document.getElementById("params-status"),
+  paramsGroups: document.getElementById("params-groups"),
   tgChatId: document.getElementById("tg-chat-id"),
   tgLookupBtn: document.getElementById("tg-lookup-btn"),
   tgBtn: document.getElementById("tg-btn"),
@@ -101,9 +110,84 @@ function saveCar() {
 }
 
 function applyCarToForm() {
+  if (state.car.make && !CAR_MAKES.includes(state.car.make)) {
+    CAR_MAKES.push(state.car.make);
+  }
+  fillMakeOptions();
   elements.make.value = state.car.make;
+  fillModelOptions(state.car.make);
   elements.model.value = state.car.model;
   elements.year.value = state.car.year;
+}
+
+// Список популярных марок для выпадающего списка
+const CAR_MAKES = [
+  "Audi", "BMW", "Chery", "Chevrolet", "Citroen", "Daewoo", "Dodge",
+  "Fiat", "Ford", "Geely", "GMC", "Haval", "Honda", "Hyundai", "Infiniti",
+  "Jaguar", "Jeep", "Kia", "Lada", "Land Rover", "Mazda", "Mercedes-Benz",
+  "Mitsubishi", "Nissan", "Peugeot", "Renault", "SEAT", "Skoda", "Subaru",
+  "Suzuki", "Tesla", "Toyota", "Volkswagen", "Volvo",
+];
+
+// Популярные модели по маркам (подсказки, можно ввести свою)
+const CAR_MODELS = {
+  Toyota: ["Camry", "Corolla", "RAV4", "Land Cruiser", "Voxy", "Noah", "Prius", "Hilux", "Avensis"],
+  Nissan: ["Almera", "Qashqai", "X-Trail", "Note", "Juke", "Tiida", "Pathfinder", "Murano", "Teana"],
+  Honda: ["Civic", "Accord", "CR-V", "Fit", "Jazz", "HR-V"],
+  Mazda: ["3", "6", "CX-5", "CX-7", "MX-5"],
+  Subaru: ["Forester", "Impreza", "Outback", "Legacy", "XV"],
+  Mitsubishi: ["Lancer", "Outlander", "Pajero", "ASX", "Galant"],
+  Suzuki: ["Vitara", "SX4", "Jimny", "Grand Vitara"],
+  Hyundai: ["Solaris", "Creta", "Tucson", "Santa Fe", "Elantra", "i30"],
+  Kia: ["Rio", "Sportage", "Ceed", "Sorento", "Soul", "Cerato"],
+  Volkswagen: ["Polo", "Golf", "Passat", "Tiguan", "Touareg", "Jetta"],
+  Skoda: ["Octavia", "Fabia", "Superb", "Kodiaq", "Rapid"],
+  BMW: ["3 Series", "5 Series", "7 Series", "X3", "X5", "X1"],
+  "Mercedes-Benz": ["C-Class", "E-Class", "S-Class", "GLC", "GLE", "Sprinter"],
+  Audi: ["A3", "A4", "A6", "Q5", "Q7", "A5"],
+  Renault: ["Logan", "Duster", "Sandero", "Megane", "Arkana"],
+  Lada: ["Granta", "Vesta", "Niva", "Kalina", "Largus", "Priora"],
+  Ford: ["Focus", "Mondeo", "Kuga", "Fiesta", "Transit", "Explorer"],
+  Chevrolet: ["Cruze", "Aveo", "Lacetti", "Captiva", "Niva"],
+  Peugeot: ["308", "408", "3008", "508", "Partner"],
+  Citroen: ["C4", "C5", "Berlingo", "C3"],
+  Volvo: ["XC60", "XC90", "S60", "V60"],
+  Tesla: ["Model 3", "Model S", "Model X", "Model Y"],
+  Chery: ["Tiggo 4", "Tiggo 7", "Tiggo 8", "Arrizo"],
+  Geely: ["Coolray", "Atlas", "Tugella", "Monjaro"],
+  Haval: ["Jolion", "F7", "Dargo", "H9"],
+};
+
+function fillMakeOptions() {
+  elements.make.textContent = "";
+
+  const empty = document.createElement("option");
+  empty.value = "";
+  empty.textContent = "Марка";
+  elements.make.appendChild(empty);
+
+  CAR_MAKES.forEach((make) => {
+    const option = document.createElement("option");
+    option.value = make;
+    option.textContent = make;
+    elements.make.appendChild(option);
+  });
+}
+
+function fillModelOptions(make) {
+  elements.model.textContent = "";
+
+  const empty = document.createElement("option");
+  empty.value = "";
+  empty.textContent = make ? "Модель" : "Сначала марка";
+  elements.model.appendChild(empty);
+
+  (CAR_MODELS[make] || []).forEach((model) => {
+    const option = document.createElement("option");
+    option.value = model;
+    option.textContent = model;
+    elements.model.appendChild(option);
+  });
 }
 
 function renderSymptomChoices() {
@@ -276,10 +360,15 @@ function renderDetected(info) {
   elements.detectedInfo.textContent = "Определено адаптером — " + parts.join(" · ");
   elements.detectedInfo.classList.remove("hidden");
 
-  // Если марка определилась — подставляем её в поле, чтобы ИИ давал точные советы
+  // Если марка определилась — подставляем её в список, чтобы ИИ давал точные советы
   if (info.make && !state.car.make) {
     state.car.make = info.make;
+    if (!CAR_MAKES.includes(info.make)) {
+      CAR_MAKES.push(info.make);
+      fillMakeOptions();
+    }
     elements.make.value = info.make;
+    fillModelOptions(info.make);
     saveCar();
   }
 }
@@ -767,13 +856,192 @@ function renderDtcBlocks(data) {
 
 elements.dtcBtn.addEventListener("click", fetchDtc);
 
+// ---------- Стирание ошибок ----------
+elements.dtcClearBtn.addEventListener("click", async () => {
+  const confirmed = confirm(
+    "Стереть коды ошибок из блоков управления?\n\n" +
+      "После стирания погаснет лампа Check Engine. Если неисправность не устранена, " +
+      "ошибка появится снова. Также сбросится готовность к техосмотру."
+  );
+  if (!confirmed) {
+    return;
+  }
+
+  elements.dtcStatus.textContent = "Стираю…";
+  elements.dtcClearBtn.disabled = true;
+
+  try {
+    const response = await fetch("/api/dtc/clear", { method: "POST" });
+    const data = await response.json();
+
+    if (data.error) {
+      elements.dtcStatus.textContent = data.error;
+    } else {
+      elements.dtcStatus.textContent = "Ошибки стёрты.";
+      renderDtcBlocks({ blocks: {} });
+      fetchLive();
+    }
+  } catch (error) {
+    elements.dtcStatus.textContent = "Сервер недоступен: " + error.message;
+  } finally {
+    elements.dtcClearBtn.disabled = false;
+  }
+});
+
+// ---------- Выбор адаптера ----------
+async function refreshAdapters() {
+  const type = elements.adapterType.value;
+  elements.adapterStatus.textContent = "Ищу…";
+  elements.adapterList.textContent = "";
+
+  try {
+    const response = await fetch("/api/adapters", { cache: "no-store" });
+    const data = await response.json();
+    const items = data[type] || [];
+
+    if (!items.length) {
+      elements.adapterStatus.textContent = "Ничего не найдено. Проверьте, что адаптер включён.";
+      return;
+    }
+
+    items.forEach((item) => {
+      const option = document.createElement("option");
+      option.value = item;
+      option.textContent = item;
+      elements.adapterList.appendChild(option);
+    });
+
+    elements.adapterStatus.textContent = "Найдено: " + items.length;
+  } catch (error) {
+    elements.adapterStatus.textContent = "Сервер недоступен: " + error.message;
+  }
+}
+
+elements.adapterRefresh.addEventListener("click", refreshAdapters);
+
+elements.adapterType.addEventListener("change", () => {
+  if (elements.adapterType.value === "demo") {
+    elements.adapterList.textContent = "";
+    elements.adapterStatus.textContent = "Демо-режим: адаптер не нужен.";
+    return;
+  }
+  refreshAdapters();
+});
+
+elements.adapterConnect.addEventListener("click", async () => {
+  const type = elements.adapterType.value;
+  const value = elements.adapterList.value || "";
+
+  elements.adapterStatus.textContent = "Подключаю…";
+  elements.adapterConnect.disabled = true;
+
+  try {
+    const response = await fetch("/api/connect", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ type: type, value: value }),
+    });
+    const data = await response.json();
+
+    if (data.error) {
+      elements.adapterStatus.textContent = data.error;
+    } else {
+      elements.adapterStatus.textContent = "Подключено: " + data.type;
+      fetchLive();
+    }
+  } catch (error) {
+    elements.adapterStatus.textContent = "Сервер недоступен: " + error.message;
+  } finally {
+    elements.adapterConnect.disabled = false;
+  }
+});
+
+// ---------- Расширенные параметры ----------
+elements.paramsBtn.addEventListener("click", async () => {
+  elements.paramsStatus.textContent = "Читаю все датчики…";
+  elements.paramsBtn.disabled = true;
+  elements.paramsGroups.textContent = "";
+
+  try {
+    const [catalogResponse, valuesResponse] = await Promise.all([
+      fetch("/api/params/catalog", { cache: "no-store" }),
+      fetch("/api/params/extended", { cache: "no-store" }),
+    ]);
+    const catalog = await catalogResponse.json();
+    const values = await valuesResponse.json();
+
+    if (values.error) {
+      elements.paramsStatus.textContent = values.error;
+      return;
+    }
+
+    renderParams(catalog.groups || [], values.values || {});
+    elements.paramsStatus.textContent = "Готово.";
+  } catch (error) {
+    elements.paramsStatus.textContent = "Сервер недоступен: " + error.message;
+  } finally {
+    elements.paramsBtn.disabled = false;
+  }
+});
+
+function renderParams(groups, values) {
+  elements.paramsGroups.textContent = "";
+
+  groups.forEach((group) => {
+    const block = document.createElement("div");
+    block.className = "params-group";
+
+    const title = document.createElement("div");
+    title.className = "params-group-title";
+    title.textContent = group.name;
+    block.appendChild(title);
+
+    const grid = document.createElement("div");
+    grid.className = "params-grid";
+
+    (group.params || []).forEach((param) => {
+      const value = values[param.key];
+      if (value === null || value === undefined) {
+        return;
+      }
+
+      const card = document.createElement("div");
+      card.className = "param-card";
+
+      const label = document.createElement("div");
+      label.className = "param-label";
+      label.textContent = param.name;
+
+      const line = document.createElement("div");
+      line.className = "param-value";
+      line.textContent = Number.isInteger(value) ? String(value) : value.toFixed(param.digits || 1);
+
+      const unit = document.createElement("span");
+      unit.className = "param-unit";
+      unit.textContent = param.unit;
+      line.appendChild(unit);
+
+      card.append(label, line);
+      grid.appendChild(card);
+    });
+
+    block.appendChild(grid);
+    elements.paramsGroups.appendChild(block);
+  });
+}
+
 elements.tgLookupBtn.addEventListener("click", tgLookup);
 
 elements.tgBtn.addEventListener("click", () => tgConnect(false));
 
 ["make", "model", "year"].forEach((key) => {
-  elements[key].addEventListener("input", () => {
+  elements[key].addEventListener("change", () => {
     state.car[key] = elements[key].value.trim();
+    if (key === "make") {
+      fillModelOptions(state.car.make);
+      state.car.model = "";
+      elements.model.value = "";
+    }
     saveCar();
   });
 });

@@ -21,7 +21,9 @@ from flask import Flask, jsonify, render_template, request, send_file
 
 from diagnostics import build_hints, normalize_codes
 from ble_source import BLESource
+from obd_pids import GROUP_ORDER, PID_CATALOG
 from obd_service import DemoSource, RealSource
+from wifi_obd import WiFiOBD
 
 app = Flask(__name__)
 
@@ -456,6 +458,133 @@ def api_dtc_read():
     return jsonify({"blocks": blocks, "error": None})
 
 
+@app.post("/api/dtc/clear")
+def api_dtc_clear():
+    """Стирает коды ошибок из блоков управления (режим 04)."""
+    active = current_source()
+
+    if isinstance(active, DemoSource):
+        return jsonify({"error": "В демо-режиме стирание недоступно."}), 400
+
+    if not hasattr(active, "clear_dtcs"):
+        return jsonify({"error": "Источник данных не поддерживает стирание ошибок."}), 400
+
+    try:
+        ok = active.clear_dtcs()
+    except Exception as error:
+        return jsonify({"error": str(error)}), 503
+
+    if not ok:
+        return jsonify({"error": "Адаптер не подтвердил стирание. Попробуйте ещё раз."}), 502
+
+    # После стирания кэш кодов устарел — обнуляем
+    if hasattr(active, "_codes"):
+        active._codes = None
+
+    return jsonify({"ok": True, "error": None})
+
+
+@app.get("/api/params/catalog")
+def api_params_catalog():
+    """Список всех параметров, которые умеет читать приложение."""
+    groups = {name: [] for name in GROUP_ORDER}
+    for key, info in PID_CATALOG.items():
+        groups.setdefault(info["group"], []).append(
+            {
+                "key": key,
+                "name": info["name"],
+                "unit": info["unit"],
+                "digits": info["digits"],
+            }
+        )
+    return jsonify(
+        {
+            "groups": [
+                {"name": name, "params": groups.get(name, [])}
+                for name in GROUP_ORDER
+                if groups.get(name)
+            ]
+        }
+    )
+
+
+@app.get("/api/params/extended")
+def api_params_extended():
+    """Читает все параметры каталога (занимает несколько секунд)."""
+    active = current_source()
+
+    if not hasattr(active, "read_extended"):
+        return jsonify({"values": {}, "error": "Источник данных не поддерживает расширенные параметры."}), 400
+
+    try:
+        values = active.read_extended()
+    except Exception as error:
+        return jsonify({"values": {}, "error": str(error)}), 503
+
+    return jsonify({"values": values, "error": None})
+
+
+@app.get("/api/adapters")
+def api_adapters():
+    """Список доступных способов подключения и найденных адаптеров."""
+    from ble_obd import list_serial_ports, scan_ble_devices
+
+    ble_devices = []
+    try:
+        ble_devices = scan_ble_devices(6.0)
+    except Exception:
+        ble_devices = []
+
+    return jsonify(
+        {
+            "current": {
+                "type": getattr(source, "name", "demo"),
+                "detail": getattr(source, "_ble_name", "") or getattr(source, "host", ""),
+            },
+            "ble": ble_devices,
+            "serial": list_serial_ports(),
+            "wifi": ["192.168.0.10", "192.168.1.5", "192.168.4.1"],
+        }
+    )
+
+
+@app.post("/api/connect")
+def api_connect():
+    """Переключает приложение на выбранный адаптер."""
+    global source
+
+    data = request.get_json(silent=True) or {}
+    kind = (data.get("type") or "").strip().lower()
+    value = (data.get("value") or "").strip()
+
+    try:
+        if kind == "ble":
+            if not value:
+                return jsonify({"error": "Укажите имя BLE-адаптера."}), 400
+            source = BLESource(value)
+        elif kind == "wifi":
+            host = value or ""
+            wifi = WiFiOBD(host)
+            if not wifi.connect():
+                return jsonify({"error": wifi._last_error or "Wi-Fi-адаптер не найден."}), 503
+            wifi.initialize()
+            source = wifi
+        elif kind == "serial":
+            from obd_service import RealSource
+
+            if not value:
+                return jsonify({"error": "Укажите последовательный порт."}), 400
+            source = RealSource(value)
+        elif kind == "demo":
+            source = DemoSource(value or "lean")
+        else:
+            return jsonify({"error": "Неизвестный тип подключения."}), 400
+    except Exception as error:
+        return jsonify({"error": str(error)}), 503
+
+    return jsonify({"ok": True, "type": source.name, "error": None})
+
+
 @app.get("/api/report")
 def api_report():
     active = current_source()
@@ -701,6 +830,13 @@ def main() -> None:
         choices=sorted(DemoSource.SCENARIOS),
         help="демо-сценарий, если адаптера нет",
     )
+    parser.add_argument(
+        "--wifi",
+        nargs="?",
+        const="",
+        default=None,
+        help="подключиться к Wi-Fi-адаптеру (можно указать IP, по умолчанию автопоиск)",
+    )
     parser.add_argument("--host", default="127.0.0.1", help="адрес сервера")
     parser.add_argument("--port", type=int, default=8000, help="порт сервера")
     parser.add_argument(
@@ -712,6 +848,17 @@ def main() -> None:
 
     if args.ble:
         source = BLESource(args.ble_name)
+    elif args.wifi is not None:
+        wifi = WiFiOBD(args.wifi)
+        if not wifi.connect():
+            print(f"Не удалось подключиться по Wi-Fi: {wifi._last_error}")
+            print("Запускаю демо-режим.")
+            source = DemoSource(args.demo)
+        else:
+            wifi.initialize()
+            print(f"Wi-Fi-адаптер: {wifi.host}:{wifi.port}")
+            print(f"Протокол: {wifi.protocol}")
+            source = wifi
     elif args.real:
         source = RealSource(args.device)
     else:

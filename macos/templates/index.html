@@ -52,14 +52,31 @@
     <section class="panel">
       <h2>Автомобиль</h2>
       <div class="vehicle">
-        <input id="make" type="text" placeholder="Марка" autocomplete="off">
-        <input id="model" type="text" placeholder="Модель" autocomplete="off">
+        <select id="make-select"></select>
+        <select id="model-select"></select>
         <input id="year" type="text" placeholder="Год" autocomplete="off">
         <input id="vin" type="text" placeholder="VIN (17 символов)" maxlength="17" autocomplete="off">
         <button id="vin-btn" class="secondary" type="button">Определить по VIN</button>
       </div>
       <p id="vin-status" class="vin-status"></p>
       <p id="detected-info" class="detected-info hidden"></p>
+    </section>
+
+    <section class="panel">
+      <h2>Подключение</h2>
+      <p class="advice-subtitle">Выберите способ подключения к адаптеру.</p>
+      <div class="vehicle">
+        <select id="adapter-type">
+          <option value="ble">Bluetooth LE</option>
+          <option value="serial">Bluetooth / USB (порт)</option>
+          <option value="wifi">Wi-Fi</option>
+          <option value="demo">Демо</option>
+        </select>
+        <select id="adapter-list"></select>
+        <button id="adapter-refresh" class="secondary" type="button">Найти</button>
+        <button id="adapter-connect" type="button">Подключить</button>
+      </div>
+      <p id="adapter-status" class="vin-status"></p>
     </section>
 
     <section class="panel">
@@ -83,10 +100,21 @@
 
     <section class="panel">
       <h2>Ошибки и что проверить</h2>
-      <button id="dtc-btn" class="secondary" type="button">Чтение ошибок по блокам</button>
-      <span id="dtc-status" class="advice-status"></span>
+      <div class="controls-row">
+        <button id="dtc-btn" class="secondary" type="button">Чтение ошибок по блокам</button>
+        <button id="dtc-clear-btn" class="danger" type="button">Стереть ошибки</button>
+        <span id="dtc-status" class="advice-status"></span>
+      </div>
       <div id="dtc-blocks" class="dtc-blocks"></div>
       <div id="hints" class="hints"></div>
+    </section>
+
+    <section class="panel">
+      <h2>Все параметры</h2>
+      <p class="advice-subtitle">Полный набор датчиков: чтение занимает несколько секунд.</p>
+      <button id="params-btn" class="secondary" type="button">Прочитать все параметры</button>
+      <span id="params-status" class="advice-status"></span>
+      <div id="params-groups" class="params-groups"></div>
     </section>
 
     <section class="panel">
