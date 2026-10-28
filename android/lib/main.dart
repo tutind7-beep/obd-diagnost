@@ -5,6 +5,8 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 
+import 'api_client.dart';
+
 void main() {
   runApp(const ObdApp());
 }
@@ -194,10 +196,38 @@ class _HomeScreenState extends State<HomeScreen> {
   final Map<String, List<ChartPoint>> _chartData = {}; // истории значений для графиков
   String _chartChoice = "rpm"; // выбранный в списке параметр
 
+  // --- Облако: аккаунт, советы ИИ, история ---
+  ApiClient? _api;
+  bool _cloudBusy = false;
+  String _cloudStatus = "";
+  String _adviceText = "";
+  String _advicePart = "";
+  String _adviceCost = "";
+  String _adviceStatus = "";
+
   final StringBuffer _replyBuffer = StringBuffer();
   Completer<String>? _replyCompleter;
   Timer? _pollTimer;
   bool _scanning = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _restoreCloudSession();
+  }
+
+  /// Восстанавливает вход в аккаунт, если он был сохранён.
+  Future<void> _restoreCloudSession() async {
+    final client = await ApiClient.restore();
+    if (mounted) {
+      setState(() {
+        _api = client;
+        _cloudStatus = client.isLoggedIn
+            ? "Вы вошли как ${client.email}"
+            : "Вход не выполнен — история и ИИ недоступны";
+      });
+    }
+  }
 
   @override
   void dispose() {
@@ -672,6 +702,256 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   // ----------------------------------------------------------
+  //  Облако: вход в аккаунт
+  // ----------------------------------------------------------
+  Future<void> _showAuthDialog() async {
+    final emailController = TextEditingController(text: _api?.email ?? "");
+    final passwordController = TextEditingController();
+    String dialogStatus = "";
+    bool busy = false;
+
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            Future<void> submit(bool isRegister) async {
+              final email = emailController.text.trim();
+              final password = passwordController.text;
+
+              if (email.isEmpty || password.isEmpty) {
+                setDialogState(() => dialogStatus = "Введите email и пароль.");
+                return;
+              }
+
+              setDialogState(() {
+                busy = true;
+                dialogStatus = isRegister ? "Создаю аккаунт…" : "Вхожу…";
+              });
+
+              final client = _api ?? ApiClient();
+              final error = isRegister
+                  ? await client.register(email, password)
+                  : await client.login(email, password);
+
+              if (!dialogContext.mounted) {
+                return;
+              }
+
+              if (error != null) {
+                setDialogState(() {
+                  busy = false;
+                  dialogStatus = error;
+                });
+                return;
+              }
+
+              setState(() {
+                _api = client;
+                _cloudStatus = "Вы вошли как ${client.email}";
+              });
+              Navigator.pop(dialogContext);
+            }
+
+            return AlertDialog(
+              backgroundColor: const Color(0xFF172029),
+              title: const Text("Аккаунт"),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextField(
+                    controller: emailController,
+                    keyboardType: TextInputType.emailAddress,
+                    decoration: const InputDecoration(labelText: "Email"),
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: passwordController,
+                    obscureText: true,
+                    decoration: const InputDecoration(
+                      labelText: "Пароль (от 6 символов)",
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  if (dialogStatus.isNotEmpty)
+                    Text(dialogStatus,
+                        style: const TextStyle(
+                            fontSize: 12, color: Colors.orangeAccent)),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: busy ? null : () => submit(false),
+                  child: const Text("Войти"),
+                ),
+                TextButton(
+                  onPressed: busy ? null : () => submit(true),
+                  child: const Text("Зарегистрироваться"),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Future<void> _logout() async {
+    await _api?.logout();
+    setState(() {
+      _api = null;
+      _cloudStatus = "Вход не выполнен — история и ИИ недоступны";
+      _adviceText = "";
+      _advicePart = "";
+      _adviceCost = "";
+    });
+  }
+
+  // ----------------------------------------------------------
+  //  Облако: совет ИИ по текущим данным
+  // ----------------------------------------------------------
+  Future<void> _askAdvice() async {
+    final client = _api;
+    if (client == null || !client.isLoggedIn) {
+      setState(() => _adviceStatus = "Сначала войдите в аккаунт.");
+      return;
+    }
+
+    setState(() {
+      _cloudBusy = true;
+      _adviceStatus = "Думаю…";
+      _adviceText = "";
+      _advicePart = "";
+      _adviceCost = "";
+    });
+
+    try {
+      final data = await client.askAdvice(
+        codes: _dtcCodes,
+        live: _live,
+        make: _detectedMake,
+      );
+
+      setState(() {
+        if (data["error"] != null) {
+          _adviceStatus = data["error"].toString();
+        } else {
+          _adviceText = (data["advice"] ?? "").toString();
+          _advicePart = (data["part"] ?? "").toString();
+          _adviceCost = (data["cost"] ?? "").toString();
+          _adviceStatus = "";
+        }
+      });
+    } catch (error) {
+      setState(() => _adviceStatus = "Нет связи с сервером: $error");
+    } finally {
+      if (mounted) {
+        setState(() => _cloudBusy = false);
+      }
+    }
+  }
+
+  // ----------------------------------------------------------
+  //  Облако: история диагностик
+  // ----------------------------------------------------------
+  Future<void> _openHistory() async {
+    final client = _api;
+    if (client == null || !client.isLoggedIn) {
+      setState(() => _cloudStatus = "Сначала войдите в аккаунт.");
+      return;
+    }
+
+    List<Map<String, dynamic>> items = [];
+    String error = "";
+
+    try {
+      items = await client.history();
+    } catch (exception) {
+      error = exception.toString();
+    }
+
+    if (!mounted) {
+      return;
+    }
+
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => Scaffold(
+          appBar: AppBar(
+            title: const Text("История диагностик"),
+            backgroundColor: const Color(0xFF172029),
+          ),
+          backgroundColor: const Color(0xFF0E141A),
+          body: error.isNotEmpty
+              ? Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(20),
+                    child: Text("Не удалось загрузить историю: $error",
+                        style: const TextStyle(color: Colors.grey)),
+                  ),
+                )
+              : items.isEmpty
+                  ? const Center(
+                      child: Text("Записей пока нет",
+                          style: TextStyle(color: Colors.grey)),
+                    )
+                  : ListView.separated(
+                      padding: const EdgeInsets.all(16),
+                      itemCount: items.length,
+                      separatorBuilder: (_, _) => const SizedBox(height: 10),
+                      itemBuilder: (context, index) {
+                        final item = items[index];
+                        final codes = (item["codes"] as List?)?.join(", ") ?? "";
+                        return Container(
+                          padding: const EdgeInsets.all(14),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF172029),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: const Color(0xFF26333F)),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                (item["created_at"] ?? "").toString(),
+                                style: const TextStyle(
+                                    fontSize: 11, color: Colors.grey),
+                              ),
+                              if (codes.isNotEmpty)
+                                Padding(
+                                  padding: const EdgeInsets.only(top: 4),
+                                  child: Text("Коды: $codes",
+                                      style: const TextStyle(
+                                          color: Color(0xFFFF9A9C),
+                                          fontWeight: FontWeight.bold)),
+                                ),
+                              const SizedBox(height: 6),
+                              Text(
+                                (item["advice"] ?? "").toString(),
+                                style: const TextStyle(fontSize: 13),
+                              ),
+                              if ((item["part"] ?? "").toString().isNotEmpty)
+                                Padding(
+                                  padding: const EdgeInsets.only(top: 6),
+                                  child: Text(
+                                    "Запчасть: ${item["part"]}",
+                                    style: const TextStyle(
+                                        fontSize: 12,
+                                        color: Color(0xFF35C28F)),
+                                  ),
+                                ),
+                            ],
+                          ),
+                        );
+                      },
+                    ),
+        ),
+      ),
+    );
+  }
+
+  // ----------------------------------------------------------
   //  Интерфейс
   // ----------------------------------------------------------
   @override
@@ -700,6 +980,8 @@ class _HomeScreenState extends State<HomeScreen> {
             _dtcSection(),
             const SizedBox(height: 16),
             _chartsSection(),
+            const SizedBox(height: 16),
+            _cloudSection(),
             const SizedBox(height: 16),
             _scanSection(),
           ],
@@ -1114,6 +1396,99 @@ class _HomeScreenState extends State<HomeScreen> {
           },
         );
       },
+    );
+  }
+
+  /// Панель облака: аккаунт, советы ИИ и история.
+  Widget _cloudSection() {
+    final client = _api;
+    final loggedIn = client != null && client.isLoggedIn;
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFF172029),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFF26333F)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text("Облако и ИИ",
+              style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 6),
+          Text(
+            _cloudStatus.isEmpty ? "Проверяю вход…" : _cloudStatus,
+            style: const TextStyle(fontSize: 12, color: Colors.grey),
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: [
+              if (!loggedIn)
+                ElevatedButton(
+                  onPressed: _showAuthDialog,
+                  child: const Text("Войти / Регистрация"),
+                )
+              else ...[
+                ElevatedButton(
+                  onPressed: _cloudBusy ? null : _askAdvice,
+                  child: Text(_cloudBusy ? "Думаю…" : "Спросить ИИ"),
+                ),
+                OutlinedButton(
+                  onPressed: _openHistory,
+                  child: const Text("История"),
+                ),
+                TextButton(
+                  onPressed: _logout,
+                  child: const Text("Выйти"),
+                ),
+              ],
+            ],
+          ),
+          if (_adviceStatus.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 10),
+              child: Text(_adviceStatus,
+                  style: const TextStyle(
+                      fontSize: 12, color: Colors.orangeAccent)),
+            ),
+          if (_adviceText.isNotEmpty)
+            Container(
+              margin: const EdgeInsets.only(top: 10),
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: const Color(0xFF1F2A35),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: const Color(0xFF26333F)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(_adviceText, style: const TextStyle(fontSize: 13)),
+                  if (_advicePart.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 8),
+                      child: Text("Вероятная запчасть: $_advicePart",
+                          style: const TextStyle(
+                              fontSize: 12,
+                              color: Color(0xFF35C28F),
+                              fontWeight: FontWeight.w600)),
+                    ),
+                  if (_adviceCost.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 4),
+                      child: Text("Примерная стоимость: $_adviceCost",
+                          style: const TextStyle(
+                              fontSize: 12, color: Colors.grey)),
+                    ),
+                ],
+              ),
+            ),
+        ],
+      ),
     );
   }
 
