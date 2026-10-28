@@ -5,6 +5,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 
+import 'package:speech_to_text/speech_to_text.dart';
+import 'package:url_launcher/url_launcher.dart';
+
 import 'api_client.dart';
 
 void main() {
@@ -76,6 +79,22 @@ const Map<String, String> tileUnits = {
   "maf": "г/с",
   "intake_temp": "°C",
 };
+
+/// Быстрый выбор частых жалоб
+const List<String> symptomChoices = [
+  "троит двигатель",
+  "дёргается при разгоне",
+  "не заводится",
+  "перегревается",
+  "горит Check Engine",
+  "потеря мощности",
+  "повышенный расход топлива",
+  "стук или шум из двигателя",
+  "запах бензина",
+  "вибрация на холостых оборотах",
+  "дым из выхлопной трубы",
+  "нестабильные холостые обороты",
+];
 
 /// Сколько точек храним в истории графиков (около 5 минут)
 const int chartMaxPoints = 120;
@@ -205,6 +224,17 @@ class _HomeScreenState extends State<HomeScreen> {
   String _adviceCost = "";
   String _adviceStatus = "";
 
+  // --- Симптомы и голосовой ввод ---
+  final Set<String> _symptoms = {};
+  String _symptomText = "";
+  String _symptomStatus = "";
+  String _symptomResult = "";
+  List<Map<String, dynamic>> _symptomParts = [];
+  bool _symptomBusy = false;
+  final SpeechToText _speech = SpeechToText();
+  bool _speechReady = false;
+  bool _listening = false;
+
   // --- Журнал работы (для поиска причин сбоев) ---
   final List<String> _logs = [];
   static const int _logLimit = 500;
@@ -218,6 +248,7 @@ class _HomeScreenState extends State<HomeScreen> {
   void initState() {
     super.initState();
     _restoreCloudSession();
+    _initSpeech();
   }
 
   /// Восстанавливает вход в аккаунт, если он был сохранён.
@@ -986,6 +1017,140 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   // ----------------------------------------------------------
+  //  Симптомы: голосовой ввод и разбор ИИ
+  // ----------------------------------------------------------
+  Future<void> _initSpeech() async {
+    try {
+      final available = await _speech.initialize(
+        onStatus: (status) {
+          if (mounted && (status == "done" || status == "notListening")) {
+            setState(() => _listening = false);
+          }
+        },
+        onError: (error) => _log("Ошибка распознавания: ${error.errorMsg}"),
+      );
+      if (mounted) {
+        setState(() => _speechReady = available);
+      }
+      _log(available
+          ? "Распознавание речи доступно"
+          : "Распознавание речи недоступно на устройстве");
+    } catch (error) {
+      _log("Распознавание речи не запустилось: $error");
+    }
+  }
+
+  Future<void> _toggleListening() async {
+    if (!_speechReady) {
+      setState(() => _symptomStatus =
+          "Распознавание речи недоступно. Введите жалобу текстом.");
+      return;
+    }
+
+    if (_listening) {
+      await _speech.stop();
+      setState(() => _listening = false);
+      return;
+    }
+
+    setState(() {
+      _listening = true;
+      _symptomStatus = "Слушаю…";
+    });
+
+    await _speech.listen(
+      listenOptions: SpeechListenOptions(localeId: "ru_RU"),
+      onResult: (result) {
+        final text = result.recognizedWords;
+        setState(() {
+          _symptomText = text;
+          _symptomStatus = result.finalResult ? "" : "Слушаю…";
+        });
+        if (result.finalResult) {
+          _guessSymptoms(text);
+        }
+      },
+    );
+  }
+
+  /// Пробует отметить знакомые жалобы по распознанному тексту.
+  void _guessSymptoms(String text) {
+    final lower = text.toLowerCase();
+    setState(() {
+      for (final choice in symptomChoices) {
+        final keyword = choice.split(" ").first;
+        if (lower.contains(keyword)) {
+          _symptoms.add(choice);
+        }
+      }
+    });
+  }
+
+  Future<void> _askSymptoms() async {
+    final client = _api;
+    if (client == null || !client.isLoggedIn) {
+      setState(() => _symptomStatus = "Сначала войдите в аккаунт.");
+      return;
+    }
+
+    final complaints = <String>[..._symptoms];
+    if (_symptomText.trim().isNotEmpty) {
+      complaints.add(_symptomText.trim());
+    }
+    if (complaints.isEmpty) {
+      setState(() => _symptomStatus = "Отметьте жалобы или скажите их голосом.");
+      return;
+    }
+
+    setState(() {
+      _symptomBusy = true;
+      _symptomStatus = "Анализирую…";
+      _symptomResult = "";
+      _symptomParts = [];
+    });
+    _log("Симптомы: ${complaints.join(", ")}");
+
+    try {
+      final data = await client.askSymptoms(
+        symptoms: complaints,
+        make: _detectedMake,
+      );
+
+      setState(() {
+        if (data["error"] != null) {
+          _symptomStatus = data["error"].toString();
+        } else {
+          _symptomResult = (data["diagnosis"] ?? "").toString();
+          final parts = data["parts"];
+          _symptomParts = parts is List
+              ? parts
+                  .map((item) => Map<String, dynamic>.from(item as Map))
+                  .toList()
+              : [];
+          _symptomStatus = "";
+        }
+      });
+    } catch (error) {
+      _log("Ошибка ИИ по симптомам: $error");
+      setState(() => _symptomStatus = "Нет связи с сервером: $error");
+    } finally {
+      if (mounted) {
+        setState(() => _symptomBusy = false);
+      }
+    }
+  }
+
+  Future<void> _openLink(String url) async {
+    final uri = Uri.tryParse(url);
+    if (uri == null) {
+      return;
+    }
+    if (!await launchUrl(uri, mode: LaunchMode.externalApplication)) {
+      _log("Не удалось открыть ссылку: $url");
+    }
+  }
+
+  // ----------------------------------------------------------
   //  Журнал работы
   // ----------------------------------------------------------
   /// Добавляет запись в журнал с отметкой времени.
@@ -1122,6 +1287,8 @@ class _HomeScreenState extends State<HomeScreen> {
             _chartsSection(),
             const SizedBox(height: 16),
             _cloudSection(),
+            const SizedBox(height: 16),
+            _symptomsSection(),
             const SizedBox(height: 16),
             _scanSection(),
           ],
@@ -1540,6 +1707,134 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   /// Панель облака: аккаунт, советы ИИ и история.
+  /// Панель диагностики по симптомам с голосовым вводом.
+  Widget _symptomsSection() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFF172029),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFF26333F)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text("Диагностика по симптомам",
+              style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 6),
+          const Text(
+            "Отметьте жалобы или скажите голосом — ИИ предположит причины. "
+            "Адаптер не нужен.",
+            style: TextStyle(fontSize: 12, color: Colors.grey),
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: symptomChoices.map((choice) {
+              final selected = _symptoms.contains(choice);
+              return FilterChip(
+                label: Text(choice, style: const TextStyle(fontSize: 12)),
+                selected: selected,
+                onSelected: (value) {
+                  setState(() {
+                    if (value) {
+                      _symptoms.add(choice);
+                    } else {
+                      _symptoms.remove(choice);
+                    }
+                  });
+                },
+              );
+            }).toList(),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: TextEditingController(text: _symptomText)
+              ..selection = TextSelection.collapsed(offset: _symptomText.length),
+            onChanged: (value) => _symptomText = value,
+            maxLines: 2,
+            decoration: const InputDecoration(
+              labelText: "Опишите проблему своими словами",
+              border: OutlineInputBorder(),
+              isDense: true,
+            ),
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: [
+              ElevatedButton.icon(
+                onPressed: _toggleListening,
+                icon: Icon(_listening ? Icons.stop : Icons.mic),
+                label: Text(_listening ? "Остановить" : "Сказать"),
+              ),
+              ElevatedButton(
+                onPressed: _symptomBusy ? null : _askSymptoms,
+                child: Text(_symptomBusy ? "Анализирую…" : "Определить причину"),
+              ),
+            ],
+          ),
+          if (_symptomStatus.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 10),
+              child: Text(_symptomStatus,
+                  style: const TextStyle(
+                      fontSize: 12, color: Colors.orangeAccent)),
+            ),
+          if (_symptomResult.isNotEmpty)
+            Container(
+              margin: const EdgeInsets.only(top: 10),
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: const Color(0xFF1F2A35),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: const Color(0xFF26333F)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(_symptomResult, style: const TextStyle(fontSize: 13)),
+                  ..._symptomParts.map((part) {
+                    final links = part["links"];
+                    return Padding(
+                      padding: const EdgeInsets.only(top: 10),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text("• ${part["name"]}",
+                              style: const TextStyle(
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w600,
+                                  color: Color(0xFF35C28F))),
+                          if (links is List)
+                            Wrap(
+                              spacing: 6,
+                              children: links.map((link) {
+                                final entry = Map<String, dynamic>.from(link as Map);
+                                return TextButton(
+                                  onPressed: () => _openLink(entry["url"].toString()),
+                                  child: Text(
+                                    entry["label"].toString(),
+                                    style: const TextStyle(fontSize: 12),
+                                  ),
+                                );
+                              }).toList(),
+                            ),
+                        ],
+                      ),
+                    );
+                  }),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
   Widget _cloudSection() {
     final client = _api;
     final loggedIn = client != null && client.isLoggedIn;
