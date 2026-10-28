@@ -75,6 +75,17 @@ const Map<String, String> tileUnits = {
   "intake_temp": "°C",
 };
 
+/// Сколько точек храним в истории графиков (около 5 минут)
+const int chartMaxPoints = 120;
+
+/// Точка графика: время и значение параметра
+class ChartPoint {
+  ChartPoint(this.time, this.value);
+
+  final DateTime time;
+  final double value;
+}
+
 /// Протоколы ELM327 в порядке проверки: сначала авто, затем самые частые
 const List<List<String>> _protocols = [
   ["0", "Автоопределение"],
@@ -180,7 +191,7 @@ class _HomeScreenState extends State<HomeScreen> {
   String _vin = ""; // VIN, прочитанный из ЭБУ
   String _detectedMake = ""; // марка, определённая по VIN
   List<String> _chartKeys = []; // параметры, для которых строятся графики
-  final Map<String, List<double>> _chartData = {}; // истории значений для графиков
+  final Map<String, List<ChartPoint>> _chartData = {}; // истории значений для графиков
   String _chartChoice = "rpm"; // выбранный в списке параметр
 
   final StringBuffer _replyBuffer = StringBuffer();
@@ -562,8 +573,8 @@ class _HomeScreenState extends State<HomeScreen> {
             return;
           }
           final history = _chartData.putIfAbsent(key, () => []);
-          history.add(value);
-          if (history.length > 40) {
+          history.add(ChartPoint(DateTime.now(), value));
+          if (history.length > chartMaxPoints) {
             history.removeAt(0);
           }
         });
@@ -957,7 +968,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final param = _paramByKey(key);
     final label = param == null ? key : "${param[3]}, ${param[4]}";
     final values = _chartData[key] ?? [];
-    final last = values.isEmpty ? null : values.last;
+    final last = values.isEmpty ? null : values.last.value;
 
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
@@ -985,6 +996,11 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
               const SizedBox(width: 8),
               GestureDetector(
+                onTap: () => _openChartDialog(key),
+                child: const Icon(Icons.open_in_full, size: 18, color: Colors.grey),
+              ),
+              const SizedBox(width: 12),
+              GestureDetector(
                 onTap: () {
                   setState(() {
                     _chartKeys = _chartKeys.where((item) => item != key).toList();
@@ -997,7 +1013,7 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
           const SizedBox(height: 8),
           SizedBox(
-            height: 120,
+            height: 170,
             width: double.infinity,
             child: CustomPaint(
               painter: LineChartPainter(values),
@@ -1005,6 +1021,99 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
         ],
       ),
+    );
+  }
+
+  /// Открывает график на весь экран с управлением масштабом.
+  void _openChartDialog(String key) {
+    final param = _paramByKey(key);
+    final label = param == null ? key : "${param[3]}, ${param[4]}";
+    var zoom = chartMaxPoints;
+
+    showDialog<void>(
+      context: context,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            final all = _chartData[key] ?? [];
+            final visibleCount = zoom < all.length ? zoom : all.length;
+            final points = all.sublist(all.length - visibleCount);
+            final last = points.isEmpty ? null : points.last.value;
+
+            return Dialog(
+              backgroundColor: const Color(0xFF172029),
+              insetPadding: const EdgeInsets.all(16),
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(label,
+                              style: const TextStyle(
+                                  fontSize: 15, fontWeight: FontWeight.bold)),
+                        ),
+                        Text(
+                          last == null ? "—" : "${_format(last)} ${param?[4] ?? ""}",
+                          style: const TextStyle(
+                              fontSize: 15,
+                              fontWeight: FontWeight.bold,
+                              color: Color(0xFF35C28F)),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        IconButton(
+                          onPressed: () => setDialogState(() {
+                            zoom = (zoom - 10) < 10 ? 10 : zoom - 10;
+                          }),
+                          icon: const Icon(Icons.remove),
+                          tooltip: "Крупнее",
+                        ),
+                        IconButton(
+                          onPressed: () => setDialogState(() {
+                            zoom = (zoom + 10) > chartMaxPoints ? chartMaxPoints : zoom + 10;
+                          }),
+                          icon: const Icon(Icons.add),
+                          tooltip: "Больше точек",
+                        ),
+                        TextButton(
+                          onPressed: () => setDialogState(() => zoom = chartMaxPoints),
+                          child: const Text("Вся история"),
+                        ),
+                        const Spacer(),
+                        TextButton(
+                          onPressed: () => Navigator.pop(dialogContext),
+                          child: const Text("Закрыть"),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    SizedBox(
+                      height: MediaQuery.of(context).size.height * 0.5,
+                      width: double.infinity,
+                      child: CustomPaint(
+                        painter: LineChartPainter(points),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    const Text(
+                      "По оси X — время, по оси Y — значение параметра. "
+                      "Кнопки − и + меняют масштаб.",
+                      style: TextStyle(fontSize: 12, color: Colors.grey),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
     );
   }
 
@@ -1043,11 +1152,11 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 }
 
-/// Рисует график изменения параметра во времени.
+/// Рисует график с осями координат: время по X, значение по Y.
 class LineChartPainter extends CustomPainter {
-  LineChartPainter(this.values);
+  LineChartPainter(this.points);
 
-  final List<double> values;
+  final List<ChartPoint> points;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -1060,21 +1169,125 @@ class LineChartPainter extends CustomPainter {
       background,
     );
 
-    if (values.length < 2) {
+    // Отступы под подписи осей
+    const padLeft = 56.0;
+    const padRight = 12.0;
+    const padTop = 10.0;
+    const padBottom = 26.0;
+
+    final plotWidth = size.width - padLeft - padRight;
+    final plotHeight = size.height - padTop - padBottom;
+    if (plotWidth <= 0 || plotHeight <= 0) {
       return;
     }
 
-    const padding = 10.0;
-    final min = values.reduce((a, b) => a < b ? a : b);
-    final max = values.reduce((a, b) => a > b ? a : b);
-    final range = (max - min) == 0 ? 1.0 : (max - min);
+    final axisPaint = Paint()
+      ..color = const Color(0xFF2B3A47)
+      ..strokeWidth = 1
+      ..style = PaintingStyle.stroke;
 
+    // Оси
+    canvas.drawLine(Offset(padLeft, padTop), Offset(padLeft, padTop + plotHeight), axisPaint);
+    canvas.drawLine(
+      Offset(padLeft, padTop + plotHeight),
+      Offset(padLeft + plotWidth, padTop + plotHeight),
+      axisPaint,
+    );
+
+    if (points.length < 2) {
+      _drawText(canvas, "Ждём данные…", Offset(padLeft + 8, padTop + plotHeight / 2),
+          const Color(0xFF92A5B7), 12);
+      return;
+    }
+
+    final values = points.map((point) => point.value).toList();
+    var min = values.reduce((a, b) => a < b ? a : b);
+    var max = values.reduce((a, b) => a > b ? a : b);
+    if (min == max) {
+      min -= 1;
+      max += 1;
+    }
+    final span = max - min;
+
+    final startMs = points.first.time.millisecondsSinceEpoch;
+    final endMs = points.last.time.millisecondsSinceEpoch;
+    final timeSpan = (endMs - startMs) == 0 ? 1 : (endMs - startMs);
+
+    // Точность подписи по оси Y зависит от разброса
+    final digits = span >= 100
+        ? 0
+        : span >= 10
+            ? 1
+            : span >= 1
+                ? 2
+                : span >= 0.1
+                    ? 3
+                    : 4;
+
+    // Горизонтальная сетка и подписи значений
+    const gridLines = 4;
+    for (var i = 0; i <= gridLines; i++) {
+      final fraction = i / gridLines;
+      final y = padTop + plotHeight * fraction;
+      final value = max - span * fraction;
+
+      if (i > 0) {
+        canvas.drawLine(
+          Offset(padLeft, y),
+          Offset(padLeft + plotWidth, y),
+          Paint()
+            ..color = const Color(0xFF1F2A35)
+            ..strokeWidth = 1,
+        );
+      }
+
+      _drawText(
+        canvas,
+        value.toStringAsFixed(digits),
+        Offset(padLeft - 6, y),
+        const Color(0xFF92A5B7),
+        11,
+        alignRight: true,
+        centerVertically: true,
+      );
+    }
+
+    // Вертикальная сетка и подписи времени
+    final timeLines = plotWidth < 420 ? 2 : 4;
+    for (var i = 0; i <= timeLines; i++) {
+      final fraction = i / timeLines;
+      final x = padLeft + plotWidth * fraction;
+      final timeMs = startMs + (timeSpan * fraction).round();
+
+      if (i > 0 && i < timeLines) {
+        canvas.drawLine(
+          Offset(x, padTop),
+          Offset(x, padTop + plotHeight),
+          Paint()
+            ..color = const Color(0xFF1F2A35)
+            ..strokeWidth = 1,
+        );
+      }
+
+      final time = DateTime.fromMillisecondsSinceEpoch(timeMs);
+      _drawText(
+        canvas,
+        _formatClock(time),
+        Offset(x, padTop + plotHeight + 6),
+        const Color(0xFF92A5B7),
+        11,
+        alignCenter: i > 0 && i < timeLines,
+        alignRight: i == timeLines,
+      );
+    }
+
+    // Линия графика
     final path = Path();
-    for (var i = 0; i < values.length; i++) {
-      final x = padding + (size.width - padding * 2) * i / (values.length - 1);
-      final y = size.height -
-          padding -
-          (size.height - padding * 2) * (values[i] - min) / range;
+    for (var i = 0; i < points.length; i++) {
+      final point = points[i];
+      final x = padLeft +
+          plotWidth * (point.time.millisecondsSinceEpoch - startMs) / timeSpan;
+      final y = padTop + plotHeight - plotHeight * (point.value - min) / span;
       if (i == 0) {
         path.moveTo(x, y);
       } else {
@@ -1082,12 +1295,55 @@ class LineChartPainter extends CustomPainter {
       }
     }
 
-    final line = Paint()
-      ..color = const Color(0xFF35C28F)
-      ..strokeWidth = 2
-      ..style = PaintingStyle.stroke
-      ..strokeJoin = StrokeJoin.round;
-    canvas.drawPath(path, line);
+    canvas.drawPath(
+      path,
+      Paint()
+        ..color = const Color(0xFF35C28F)
+        ..strokeWidth = 2
+        ..style = PaintingStyle.stroke
+        ..strokeJoin = StrokeJoin.round,
+    );
+
+    // Точка на последнем значении
+    final lastPoint = points.last;
+    final lastX =
+        padLeft + plotWidth * (lastPoint.time.millisecondsSinceEpoch - startMs) / timeSpan;
+    final lastY = padTop + plotHeight - plotHeight * (lastPoint.value - min) / span;
+    canvas.drawCircle(Offset(lastX, lastY), 3.5, Paint()..color = const Color(0xFF35C28F));
+  }
+
+  String _formatClock(DateTime time) {
+    String two(int value) => value.toString().padLeft(2, "0");
+    return "${two(time.hour)}:${two(time.minute)}:${two(time.second)}";
+  }
+
+  void _drawText(
+    Canvas canvas,
+    String text,
+    Offset position,
+    Color color,
+    double fontSize, {
+    bool alignRight = false,
+    bool alignCenter = false,
+    bool centerVertically = false,
+  }) {
+    final painter = TextPainter(
+      text: TextSpan(
+        text: text,
+        style: TextStyle(color: color, fontSize: fontSize),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+
+    var dx = position.dx;
+    if (alignRight) {
+      dx -= painter.width;
+    } else if (alignCenter) {
+      dx -= painter.width / 2;
+    }
+
+    final dy = centerVertically ? position.dy - painter.height / 2 : position.dy;
+    painter.paint(canvas, Offset(dx, dy));
   }
 
   @override
