@@ -6,6 +6,7 @@ import threading
 import time
 
 from ble_obd import BLEOBD
+from obd_pids import PID_CATALOG
 
 
 class BLESource:
@@ -96,6 +97,21 @@ class BLESource:
             self._ensure_connected()
             try:
                 return self._obd.read_pids_extended()
+            except Exception as error:
+                self._connected = False
+                self._last_error = str(error)
+                raise
+
+    def read_params(self, keys: list[str]) -> dict:
+        """Читает только выбранные параметры (для графиков)."""
+        with self._lock:
+            self._ensure_connected()
+            try:
+                return {
+                    key: self._obd.read_pid(PID_CATALOG[key]["pid"])
+                    for key in keys
+                    if key in PID_CATALOG
+                }
             except Exception as error:
                 self._connected = False
                 self._last_error = str(error)

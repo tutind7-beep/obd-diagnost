@@ -85,17 +85,15 @@
     </section>
 
     <section class="panel">
-      <h2>Графики за последнюю минуту</h2>
-      <div class="charts">
-        <figure>
-          <figcaption>Обороты, об/мин</figcaption>
-          <canvas id="rpm-chart" height="140"></canvas>
-        </figure>
-        <figure>
-          <figcaption>Температура ОЖ, °C</figcaption>
-          <canvas id="coolant-chart" height="140"></canvas>
-        </figure>
+      <h2>Графики</h2>
+      <p class="advice-subtitle">Выберите параметры, которые нужно отслеживать. Графики обновляются в реальном времени.</p>
+      <div class="chart-controls">
+        <select id="chart-select"></select>
+        <button id="chart-add" class="secondary" type="button">Добавить график</button>
+        <button id="chart-clear" class="secondary" type="button">Убрать все</button>
       </div>
+      <div id="charts-container" class="charts-container"></div>
+      <p id="charts-empty" class="empty">Графики не выбраны. Добавьте нужный параметр выше.</p>
     </section>
 
     <section class="panel">
@@ -107,14 +105,6 @@
       </div>
       <div id="dtc-blocks" class="dtc-blocks"></div>
       <div id="hints" class="hints"></div>
-    </section>
-
-    <section class="panel">
-      <h2>Все параметры</h2>
-      <p class="advice-subtitle">Полный набор датчиков: чтение занимает несколько секунд.</p>
-      <button id="params-btn" class="secondary" type="button">Прочитать все параметры</button>
-      <span id="params-status" class="advice-status"></span>
-      <div id="params-groups" class="params-groups"></div>
     </section>
 
     <section class="panel">

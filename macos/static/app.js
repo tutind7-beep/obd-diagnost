@@ -30,10 +30,18 @@ const SYMPTOM_CHOICES = [
   "нестабильные холостые обороты",
 ];
 
+// Цвета линий графиков (по кругу)
+const CHART_COLORS = [
+  "#35c28f", "#5b9dff", "#f5a524", "#e5484d",
+  "#a78bfa", "#22d3ee", "#f472b6", "#84cc16",
+];
+
 const state = {
   timer: null,
   source: "demo",
-  history: { rpm: [], coolant: [] },
+  chartKeys: [],      // параметры, для которых строятся графики
+  chartData: {},      // key -> история значений
+  catalogGroups: [],  // каталог параметров с сервера
   advice: { loading: false, lastCodesKey: "", lastText: "" },
   car: { make: "", model: "", year: "" },
 };
@@ -50,8 +58,11 @@ const elements = {
   autoRefresh: document.getElementById("auto-refresh"),
   refreshBtn: document.getElementById("refresh-btn"),
   reportBtn: document.getElementById("report-btn"),
-  rpmChart: document.getElementById("rpm-chart"),
-  coolantChart: document.getElementById("coolant-chart"),
+  chartSelect: document.getElementById("chart-select"),
+  chartAdd: document.getElementById("chart-add"),
+  chartClear: document.getElementById("chart-clear"),
+  chartsContainer: document.getElementById("charts-container"),
+  chartsEmpty: document.getElementById("charts-empty"),
   adviceBtn: document.getElementById("advice-btn"),
   adviceStatus: document.getElementById("advice-status"),
   adviceText: document.getElementById("advice-text"),
@@ -83,9 +94,6 @@ const elements = {
   adapterRefresh: document.getElementById("adapter-refresh"),
   adapterConnect: document.getElementById("adapter-connect"),
   adapterStatus: document.getElementById("adapter-status"),
-  paramsBtn: document.getElementById("params-btn"),
-  paramsStatus: document.getElementById("params-status"),
-  paramsGroups: document.getElementById("params-groups"),
   tgChatId: document.getElementById("tg-chat-id"),
   tgLookupBtn: document.getElementById("tg-lookup-btn"),
   tgBtn: document.getElementById("tg-btn"),
@@ -402,16 +410,159 @@ function renderAlert(data) {
   }
 }
 
-function pushHistory(live) {
-  ["rpm", "coolant"].forEach((key) => {
-    const value = live[key];
-    if (typeof value === "number") {
-      state.history[key].push(value);
-      if (state.history[key].length > MAX_POINTS) {
-        state.history[key].shift();
+// ---------- Графики: только выбранные пользователем параметры ----------
+
+function loadChartKeys() {
+  try {
+    const saved = JSON.parse(localStorage.getItem("obd-charts") || "[]");
+    return Array.isArray(saved) ? saved.filter((key) => typeof key === "string") : [];
+  } catch (error) {
+    return [];
+  }
+}
+
+function saveChartKeys() {
+  try {
+    localStorage.setItem("obd-charts", JSON.stringify(state.chartKeys));
+  } catch (error) {
+    // хранилище может быть недоступно — игнорируем
+  }
+}
+
+// Заполняет выпадающий список параметрами, сгруппированными по системам
+async function loadChartCatalog() {
+  try {
+    const response = await fetch("/api/params/catalog", { cache: "no-store" });
+    const data = await response.json();
+    elements.chartSelect.textContent = "";
+
+    (data.groups || []).forEach((group) => {
+      const optgroup = document.createElement("optgroup");
+      optgroup.label = group.name;
+
+      (group.params || []).forEach((param) => {
+        if (state.chartKeys.includes(param.key)) {
+          return; // уже добавлен
+        }
+        const option = document.createElement("option");
+        option.value = param.key;
+        option.textContent = param.name + " (" + param.unit + ")";
+        optgroup.appendChild(option);
+      });
+
+      if (optgroup.children.length) {
+        elements.chartSelect.appendChild(optgroup);
+      }
+    });
+  } catch (error) {
+    elements.chartsEmpty.textContent = "Не удалось загрузить список параметров: " + error.message;
+  }
+}
+
+function chartInfo(key) {
+  for (const group of state.catalogGroups) {
+    for (const param of group.params || []) {
+      if (param.key === key) {
+        return param;
       }
     }
+  }
+  return { key: key, name: key, unit: "", digits: 1 };
+}
+
+function addChart() {
+  const key = elements.chartSelect.value;
+  if (!key || state.chartKeys.includes(key)) {
+    return;
+  }
+  state.chartKeys.push(key);
+  state.chartData[key] = [];
+  saveChartKeys();
+  renderCharts();
+  loadChartCatalog();
+  fetchChartValues();
+}
+
+function removeChart(key) {
+  state.chartKeys = state.chartKeys.filter((item) => item !== key);
+  delete state.chartData[key];
+  saveChartKeys();
+  renderCharts();
+  loadChartCatalog();
+}
+
+function renderCharts() {
+  elements.chartsContainer.textContent = "";
+
+  if (!state.chartKeys.length) {
+    elements.chartsEmpty.classList.remove("hidden");
+    return;
+  }
+  elements.chartsEmpty.classList.add("hidden");
+
+  state.chartKeys.forEach((key, index) => {
+    const info = chartInfo(key);
+
+    const figure = document.createElement("figure");
+    figure.className = "chart-figure";
+
+    const header = document.createElement("div");
+    header.className = "chart-header";
+
+    const caption = document.createElement("span");
+    caption.className = "chart-caption";
+    caption.textContent = info.name + ", " + info.unit;
+
+    const valueSpan = document.createElement("span");
+    valueSpan.className = "chart-value";
+    valueSpan.id = "chart-value-" + index;
+
+    const removeBtn = document.createElement("button");
+    removeBtn.className = "chart-remove";
+    removeBtn.type = "button";
+    removeBtn.textContent = "✕";
+    removeBtn.title = "Убрать график";
+    removeBtn.addEventListener("click", () => removeChart(key));
+
+    header.append(caption, valueSpan, removeBtn);
+
+    const canvas = document.createElement("canvas");
+    canvas.className = "chart-canvas";
+    canvas.height = 140;
+    canvas.dataset.key = key;
+
+    figure.append(header, canvas);
+    elements.chartsContainer.appendChild(figure);
   });
+
+  drawAllCharts();
+}
+
+function drawAllCharts() {
+  state.chartKeys.forEach((key, index) => {
+    const canvas = elements.chartsContainer.querySelector(
+      'canvas[data-key="' + key + '"]'
+    );
+    if (!canvas) {
+      return;
+    }
+
+    const values = state.chartData[key] || [];
+    drawChart(canvas, values, CHART_COLORS[index % CHART_COLORS.length]);
+
+    const info = chartInfo(key);
+    const valueSpan = document.getElementById("chart-value-" + index);
+    if (valueSpan) {
+      const last = values.length ? values[values.length - 1] : null;
+      valueSpan.textContent = last === null ? "—" : formatChartValue(last, info);
+    }
+  });
+}
+
+function formatChartValue(value, info) {
+  const digits = info.digits === undefined ? 1 : info.digits;
+  const text = digits === 0 ? String(Math.round(value)) : value.toFixed(digits);
+  return text + " " + (info.unit || "");
 }
 
 function drawChart(canvas, values, color) {
@@ -455,9 +606,41 @@ function drawChart(canvas, values, color) {
   context.stroke();
 }
 
-function drawCharts() {
-  drawChart(elements.rpmChart, state.history.rpm, "#35c28f");
-  drawChart(elements.coolantChart, state.history.coolant, "#5b9dff");
+// Запрашивает значения только выбранных параметров и добавляет их в историю
+async function fetchChartValues() {
+  if (!state.chartKeys.length) {
+    return;
+  }
+
+  try {
+    const response = await fetch("/api/params/values", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ keys: state.chartKeys }),
+    });
+    const data = await response.json();
+    if (data.error) {
+      return;
+    }
+
+    Object.keys(data.values || {}).forEach((key) => {
+      const value = data.values[key];
+      if (typeof value !== "number") {
+        return;
+      }
+      if (!state.chartData[key]) {
+        state.chartData[key] = [];
+      }
+      state.chartData[key].push(value);
+      if (state.chartData[key].length > MAX_POINTS) {
+        state.chartData[key].shift();
+      }
+    });
+
+    drawAllCharts();
+  } catch (error) {
+    // молча пропускаем: график обновится при следующем цикле
+  }
 }
 
 function render(data) {
@@ -465,10 +648,10 @@ function render(data) {
   renderAlert(data);
   renderTiles(data.live || {});
   renderHints(data.hints || []);
-  pushHistory(data.live || {});
-  drawCharts();
+  drawAllCharts();
   elements.updated.textContent = data.updated_at ? "Обновлено: " + data.updated_at : "";
   maybeAutoAdvice(data);
+  fetchChartValues();
 }
 
 async function fetchLive() {
@@ -956,79 +1139,16 @@ elements.adapterConnect.addEventListener("click", async () => {
   }
 });
 
-// ---------- Расширенные параметры ----------
-elements.paramsBtn.addEventListener("click", async () => {
-  elements.paramsStatus.textContent = "Читаю все датчики…";
-  elements.paramsBtn.disabled = true;
-  elements.paramsGroups.textContent = "";
+// ---------- Кнопки графиков ----------
+elements.chartAdd.addEventListener("click", addChart);
 
-  try {
-    const [catalogResponse, valuesResponse] = await Promise.all([
-      fetch("/api/params/catalog", { cache: "no-store" }),
-      fetch("/api/params/extended", { cache: "no-store" }),
-    ]);
-    const catalog = await catalogResponse.json();
-    const values = await valuesResponse.json();
-
-    if (values.error) {
-      elements.paramsStatus.textContent = values.error;
-      return;
-    }
-
-    renderParams(catalog.groups || [], values.values || {});
-    elements.paramsStatus.textContent = "Готово.";
-  } catch (error) {
-    elements.paramsStatus.textContent = "Сервер недоступен: " + error.message;
-  } finally {
-    elements.paramsBtn.disabled = false;
-  }
+elements.chartClear.addEventListener("click", () => {
+  state.chartKeys = [];
+  state.chartData = {};
+  saveChartKeys();
+  renderCharts();
+  loadChartCatalog();
 });
-
-function renderParams(groups, values) {
-  elements.paramsGroups.textContent = "";
-
-  groups.forEach((group) => {
-    const block = document.createElement("div");
-    block.className = "params-group";
-
-    const title = document.createElement("div");
-    title.className = "params-group-title";
-    title.textContent = group.name;
-    block.appendChild(title);
-
-    const grid = document.createElement("div");
-    grid.className = "params-grid";
-
-    (group.params || []).forEach((param) => {
-      const value = values[param.key];
-      if (value === null || value === undefined) {
-        return;
-      }
-
-      const card = document.createElement("div");
-      card.className = "param-card";
-
-      const label = document.createElement("div");
-      label.className = "param-label";
-      label.textContent = param.name;
-
-      const line = document.createElement("div");
-      line.className = "param-value";
-      line.textContent = Number.isInteger(value) ? String(value) : value.toFixed(param.digits || 1);
-
-      const unit = document.createElement("span");
-      unit.className = "param-unit";
-      unit.textContent = param.unit;
-      line.appendChild(unit);
-
-      card.append(label, line);
-      grid.appendChild(card);
-    });
-
-    block.appendChild(grid);
-    elements.paramsGroups.appendChild(block);
-  });
-}
 
 elements.tgLookupBtn.addEventListener("click", tgLookup);
 
@@ -1114,8 +1234,11 @@ elements.autoRefresh.addEventListener("change", () => {
 
 elements.scenario.addEventListener("change", async () => {
   await fetch("/api/demo/" + elements.scenario.value, { method: "POST" });
-  state.history.rpm = [];
-  state.history.coolant = [];
+  // При смене сценария начинаем историю графиков заново
+  state.chartKeys.forEach((key) => {
+    state.chartData[key] = [];
+  });
+  renderCharts();
   fetchLive();
 });
 
@@ -1132,6 +1255,24 @@ document.addEventListener("visibilitychange", () => {
 state.car = loadCar();
 applyCarToForm();
 renderSymptomChoices();
+
+// Графики: восстанавливаем выбранные параметры
+state.chartKeys = loadChartKeys();
+state.chartKeys.forEach((key) => {
+  state.chartData[key] = [];
+});
+
+// Каталог параметров нужен и для списка выбора, и для подписей графиков
+fetch("/api/params/catalog", { cache: "no-store" })
+  .then((response) => response.json())
+  .then((data) => {
+    state.catalogGroups = data.groups || [];
+    renderCharts();
+    loadChartCatalog();
+  })
+  .catch(() => {
+    renderCharts();
+  });
 
 // Если Telegram уже настраивали — тихо подключаемся заново
 const savedTgChatId = loadTgChatId();

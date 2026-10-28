@@ -508,6 +508,28 @@ def api_params_catalog():
     )
 
 
+@app.post("/api/params/values")
+def api_params_values():
+    """Читает значения только выбранных параметров (для графиков)."""
+    data = request.get_json(silent=True) or {}
+    keys = [key for key in (data.get("keys") or []) if key in PID_CATALOG]
+    if not keys:
+        return jsonify({"values": {}, "error": "Выберите хотя бы один параметр."}), 400
+
+    active = current_source()
+
+    if hasattr(active, "read_params"):
+        try:
+            values = active.read_params(keys)
+        except Exception as error:
+            return jsonify({"values": {}, "error": str(error)}), 503
+        return jsonify({"values": values, "error": None})
+
+    return jsonify(
+        {"values": {}, "error": "Источник данных не поддерживает выбор параметров."}
+    ), 400
+
+
 @app.get("/api/params/extended")
 def api_params_extended():
     """Читает все параметры каталога (занимает несколько секунд)."""

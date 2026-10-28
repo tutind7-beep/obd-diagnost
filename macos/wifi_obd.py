@@ -142,6 +142,14 @@ class WiFiOBD:
     def read_pids_extended(self) -> dict:
         return {key: self.read_pid(info["pid"]) for key, info in PID_CATALOG.items()}
 
+    def read_params(self, keys: list[str]) -> dict:
+        """Читает только указанные параметры (для графиков)."""
+        return {
+            key: self.read_pid(PID_CATALOG[key]["pid"])
+            for key in keys
+            if key in PID_CATALOG
+        }
+
     def read_dtcs(self) -> list[str]:
         return parse_dtc_answer(self.command("03", 3))
 

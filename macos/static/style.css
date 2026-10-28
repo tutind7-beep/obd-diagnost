@@ -237,6 +237,73 @@ select {
   color: #ffc46b;
 }
 
+.charts-container {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 16px;
+  margin-top: 14px;
+}
+
+.chart-figure {
+  margin: 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel-2);
+}
+
+.chart-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.chart-caption {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.chart-value {
+  margin-left: auto;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--accent);
+}
+
+.chart-remove {
+  padding: 2px 8px;
+  border-radius: 8px;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.chart-remove:hover {
+  color: #ff9a9c;
+  border-color: #6b2b2e;
+}
+
+.chart-canvas {
+  display: block;
+  width: 100%;
+  height: 140px;
+  border-radius: 10px;
+  background: var(--panel);
+}
+
+.chart-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.chart-controls select {
+  flex: 1 1 220px;
+}
+
 .charts {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));

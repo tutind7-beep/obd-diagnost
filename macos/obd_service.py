@@ -153,6 +153,17 @@ class DemoSource:
                 values[key] = _demo_value(key)
         return values
 
+    def read_params(self, keys: list[str]) -> dict:
+        """Читает только указанные параметры (для графиков)."""
+        _, live = self.read()
+        values = {}
+        for key in keys:
+            if key in live:
+                values[key] = live[key]
+            else:
+                values[key] = _demo_value(key)
+        return values
+
     def close(self) -> None:
         pass
 
@@ -222,6 +233,21 @@ class RealSource:
                 raise
 
         return codes, live
+
+    def read_extended(self) -> dict:
+        """Все параметры, которые умеет отдавать python-OBD."""
+        codes, live = self.read()
+        values = {}
+        for key, _ in COMMANDS:
+            if key in live:
+                values[key] = live[key]
+        return values
+
+    def read_params(self, keys: list[str]) -> dict:
+        """Читает только выбранные параметры из поддерживаемых."""
+        supported = {key for key, _ in COMMANDS}
+        _, live = self.read()
+        return {key: live.get(key) for key in keys if key in supported}
 
     def clear_dtcs(self) -> bool:
         """Стирает коды ошибок (режим 04)."""
