@@ -397,6 +397,16 @@ canvas {
   font-size: 13px;
 }
 
+.detected-info {
+  margin: 8px 0 0;
+  padding: 8px 12px;
+  border: 1px solid #1f6b52;
+  border-radius: 8px;
+  background: rgba(53, 194, 143, 0.08);
+  color: var(--accent);
+  font-size: 13px;
+}
+
 .part-box {
   margin-top: 14px;
   padding: 12px 14px;

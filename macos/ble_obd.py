@@ -39,10 +39,89 @@ PID_COMMANDS = {
 
 HEX_CHARS = set("0123456789ABCDEF")
 
+# Протоколы ELM327 в порядке проверки: сначала авто, потом самые частые.
+# Код -> (команда, человекочитаемое название)
+PROTOCOLS = [
+    ("0", "Автоопределение"),
+    ("6", "CAN 11-бит, 500 кбод (ISO 15765-4)"),
+    ("7", "CAN 29-бит, 500 кбод (ISO 15765-4)"),
+    ("8", "CAN 11-бит, 250 кбод (ISO 15765-4)"),
+    ("9", "CAN 29-бит, 250 кбод (ISO 15765-4)"),
+    ("3", "ISO 9141-2"),
+    ("5", "ISO 14230-4 KWP (быстрая инициализация)"),
+    ("4", "ISO 14230-4 KWP (5 baud)"),
+    ("1", "SAE J1850 PWM"),
+    ("2", "SAE J1850 VPW"),
+    ("A", "SAE J1939 CAN"),
+]
+
+# Марка по первым трём знакам VIN (WMI — код производителя).
+# Список покрывает самые распространённые марки; если кода нет — марка не определится.
+VIN_MAKES = {
+    # Япония
+    "JTD": "Toyota", "JTE": "Toyota", "JTF": "Toyota", "JTG": "Toyota",
+    "JTH": "Toyota", "JTJ": "Toyota", "JTK": "Toyota", "JTL": "Toyota",
+    "JTM": "Toyota", "JTN": "Toyota", "JTP": "Toyota", "JT2": "Toyota",
+    "JT3": "Toyota", "JT4": "Toyota", "JT5": "Toyota", "JT6": "Toyota",
+    "JT8": "Toyota", "JZX": "Toyota",
+    "JN1": "Nissan", "JN3": "Nissan", "JN6": "Nissan", "JN8": "Nissan",
+    "JNK": "Infiniti", "JNR": "Infiniti", "VSK": "Nissan", "SJN": "Nissan",
+    "JHM": "Honda", "JHL": "Honda", "JHG": "Honda",
+    "1HG": "Honda", "2HG": "Honda", "3HG": "Honda", "5FN": "Honda",
+    "JM1": "Mazda", "JM3": "Mazda", "JMZ": "Mazda",
+    "JF1": "Subaru", "JF2": "Subaru", "4S3": "Subaru", "4S4": "Subaru",
+    "JA3": "Mitsubishi", "JA4": "Mitsubishi", "4A3": "Mitsubishi",
+    "JS1": "Suzuki", "JS2": "Suzuki", "JS3": "Suzuki", "TSM": "Suzuki",
+    "JMB": "Mitsubishi", "JMY": "Mitsubishi",
+    "JT1": "Toyota",
+    # Корея
+    "KMH": "Hyundai", "KM8": "Hyundai", "KMU": "Hyundai", "5NP": "Hyundai",
+    "KNA": "Kia", "KND": "Kia", "KNM": "Kia", "U5Y": "Kia",
+    "KL4": "Daewoo", "KLA": "Daewoo",
+    # Европа
+    "WBA": "BMW", "WBS": "BMW", "WBU": "BMW", "WBX": "BMW", "WBY": "BMW",
+    "WDB": "Mercedes-Benz", "WDC": "Mercedes-Benz", "WDD": "Mercedes-Benz",
+    "WDF": "Mercedes-Benz", "W1K": "Mercedes-Benz", "W1N": "Mercedes-Benz",
+    "WAU": "Audi", "WA1": "Audi", "TRU": "Audi", "WUA": "Audi",
+    "WVW": "Volkswagen", "WV1": "Volkswagen", "WV2": "Volkswagen",
+    "3VW": "Volkswagen", "1VW": "Volkswagen", "WVG": "Volkswagen",
+    "TMB": "Skoda", "TMP": "Skoda", "TMT": "Skoda",
+    "VF1": "Renault", "VF2": "Renault", "VF3": "Peugeot", "VF7": "Citroen",
+    "VFS": "Renault", "VF6": "Renault",
+    "YV1": "Volvo", "YV4": "Volvo", "YV2": "Volvo",
+    "SAJ": "Jaguar", "SAL": "Land Rover", "SAD": "Land Rover",
+    "ZFA": "Fiat", "ZFF": "Ferrari", "ZAR": "Alfa Romeo",
+    "VSS": "SEAT", "VWV": "Volkswagen",
+    # США
+    "1FA": "Ford", "1FB": "Ford", "1FC": "Ford", "1FD": "Ford",
+    "2FA": "Ford", "3FA": "Ford", "WF0": "Ford", "MAJ": "Ford",
+    "1G1": "Chevrolet", "1GC": "Chevrolet", "2G1": "Chevrolet",
+    "1GT": "GMC", "3GT": "GMC",
+    "1C3": "Chrysler", "1C4": "Jeep", "1J4": "Jeep", "1J8": "Jeep",
+    "1B3": "Dodge", "2B3": "Dodge",
+    "5YJ": "Tesla", "7SA": "Tesla",
+    # Россия / Китай
+    "XTA": "Lada", "XTT": "Lada", "XTU": "Lada", "X9F": "Lada",
+    "XW8": "Volkswagen", "X4X": "BMW",
+    "LVV": "Chery", "LVT": "Chery",
+    "LB3": "Geely", "L6T": "Geely",
+    "LGW": "Haval", "LVS": "Changan", "LSV": "Chery",
+    "Z8T": "Mitsubishi",
+}
+
+
+def vin_to_make(vin: str) -> str:
+    """Определяет марку автомобиля по первым трём знакам VIN."""
+    vin = vin.strip().upper()
+    if len(vin) < 3:
+        return ""
+    return VIN_MAKES.get(vin[:3], "")
+
 
 def _parse_response_line(line: str) -> bytes | None:
     """Превращает строку ответа ELM327 в байты (терпим к пробелам и без них)."""
-    line = line.replace(">", "").strip().upper()
+    # Убираем пробелы, переводы строк и промпт ">" — они мешают разбору
+    line = "".join(line.split()).replace(">", "").upper()
     if not line or any(ch not in HEX_CHARS for ch in line):
         return None
     if len(line) % 2 != 0:
@@ -107,6 +186,12 @@ class BLEOBD:
         self._connected_event = threading.Event()
         self._ready_event = threading.Event()
         self._last_error = ""
+
+        # Результаты автоопределения
+        self.protocol = ""
+        self.protocol_code = ""
+        self.vin = ""
+        self.make = ""
 
     # ---------- Внутренняя механика ----------
 
@@ -206,27 +291,69 @@ class BLEOBD:
         return text.strip()
 
     def initialize(self) -> None:
-        """Настройка ELM327. Без ATZ (сброс рвёт BLE) и без ATS0 (нужны пробелы).
+        """Настройка ELM327 и автоподбор протокола связи с ЭБУ.
 
-        Автоопределение протокола работает не на всех машинах (например,
-        Nissan 2013 требует CAN 11-бит), поэтому пробуем авто, затем
-        принудительно CAN 11-бит (ATSP6) и CAN 29-бит (ATSP7).
+        Автоопределение (ATSP0) работает не на всех машинах: например,
+        Nissan 2013 отвечает только при явно заданном CAN 11-бит (ATSP6).
+        Поэтому перебираем протоколы, пока ЭБУ не ответит на запрос 0100.
         """
         self.command("ATE0", 2)
         self.command("ATL0", 2)
         self.command("ATH0", 2)
-        self.command("ATSP0", 2)  # автоматический поиск протокола
-        time.sleep(0.4)
+        time.sleep(0.3)
+        self.detect_protocol()
 
-        # Проверяем, отвечает ли ЭБУ при автоопределении
-        probe = self.command("0100", 4)
-        if "41" not in probe:
-            self.command("ATSP6", 2)  # CAN 11 бит (ISO 15765-4)
-            time.sleep(0.2)
-            probe = self.command("0100", 4)
-        if "41" not in probe:
-            self.command("ATSP7", 2)  # CAN 29 бит
-            time.sleep(0.2)
+    def detect_protocol(self) -> str:
+        """Подбирает протокол, на котором ЭБУ отвечает. Возвращает название."""
+        for code, name in PROTOCOLS:
+            self.command(f"ATSP{code}", 2)
+            time.sleep(0.25)
+            # 0100 — запрос поддерживаемых PID; ответ начинается с 41
+            answer = self.command("0100", 4)
+            if "41" in answer:
+                self.protocol = name
+                self.protocol_code = code
+                return name
+
+        # Ничего не ответило — оставляем автоопределение
+        self.command("ATSP0", 2)
+        self.protocol = "не определён"
+        self.protocol_code = "0"
+        return self.protocol
+
+    def read_vin(self) -> str:
+        """Читает VIN из ЭБУ (режим 09, PID 02)."""
+        answer = self.command("0902", 6)
+        chars = []
+
+        for line in answer.splitlines():
+            raw = _parse_response_line(line)
+            if not raw or len(raw) < 3:
+                continue
+            # Ответ: 49 02 <номер кадра> <данные...>
+            if raw[0] == 0x49 and raw[1] == 0x02:
+                for byte in raw[3:]:
+                    # Печатаемые ASCII-символы — это символы VIN
+                    if 0x20 <= byte <= 0x7E:
+                        chars.append(chr(byte))
+
+        vin = "".join(chars).strip()
+        # Иногда перед VIN идут нули-заполнители
+        vin = vin.lstrip("\x00").strip()
+        if len(vin) >= 17:
+            vin = vin[-17:] if len(vin) > 17 else vin
+        return vin if len(vin) == 17 else ""
+
+    def read_vehicle_info(self) -> dict:
+        """Читает VIN из ЭБУ и определяет марку автомобиля."""
+        if not self.vin:
+            self.vin = self.read_vin()
+            self.make = vin_to_make(self.vin)
+        return {
+            "vin": self.vin,
+            "make": self.make,
+            "protocol": self.protocol,
+        }
 
     def read_pid(self, pid: str, kind: str) -> float | None:
         answer = self.command(pid, 1.2)

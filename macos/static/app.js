@@ -65,6 +65,7 @@ const elements = {
   vin: document.getElementById("vin"),
   vinBtn: document.getElementById("vin-btn"),
   vinStatus: document.getElementById("vin-status"),
+  detectedInfo: document.getElementById("detected-info"),
   partBox: document.getElementById("part-box"),
   partName: document.getElementById("part-name"),
   partCost: document.getElementById("part-cost"),
@@ -234,6 +235,7 @@ function renderStatus(data) {
   elements.badge.classList.toggle("real", data.source === "real");
 
   renderHealth(data.health);
+  renderDetected(data.vehicle_info);
 
   if (data.connected) {
     elements.status.textContent = "Подключено";
@@ -247,6 +249,38 @@ function renderStatus(data) {
 
   if (data.source === "demo" && data.scenario) {
     elements.scenario.value = data.scenario;
+  }
+}
+
+function renderDetected(info) {
+  if (!elements.detectedInfo) {
+    return;
+  }
+
+  if (!info || (!info.make && !info.protocol)) {
+    elements.detectedInfo.classList.add("hidden");
+    return;
+  }
+
+  const parts = [];
+  if (info.make) {
+    parts.push("Марка: " + info.make);
+  }
+  if (info.vin) {
+    parts.push("VIN: " + info.vin);
+  }
+  if (info.protocol) {
+    parts.push("Протокол: " + info.protocol);
+  }
+
+  elements.detectedInfo.textContent = "Определено адаптером — " + parts.join(" · ");
+  elements.detectedInfo.classList.remove("hidden");
+
+  // Если марка определилась — подставляем её в поле, чтобы ИИ давал точные советы
+  if (info.make && !state.car.make) {
+    state.car.make = info.make;
+    elements.make.value = info.make;
+    saveCar();
   }
 }
 

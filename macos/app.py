@@ -386,6 +386,14 @@ def api_live():
     hints = build_hints(codes, live)
     stopped = any(hint.severity == "СТОП" for hint in hints)
 
+    # Данные автомобиля, определённые адаптером (марка, VIN, протокол)
+    vehicle_info = {}
+    if hasattr(active, "vehicle_info"):
+        try:
+            vehicle_info = active.vehicle_info()
+        except Exception:
+            vehicle_info = {}
+
     if stopped:
         stop_titles = [hint.title for hint in hints if hint.severity == "СТОП"]
         _notify_telegram(
@@ -404,6 +412,7 @@ def api_live():
             "hints": [hint.to_dict() for hint in hints],
             "stopped": stopped,
             "health": _health_score(hints),
+            "vehicle_info": vehicle_info,
             "scenario": getattr(active, "scenario", None),
             "updated_at": datetime.now().strftime("%H:%M:%S"),
         }

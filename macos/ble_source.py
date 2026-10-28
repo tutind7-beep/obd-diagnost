@@ -38,6 +38,20 @@ class BLESource:
                 )
             self._obd.initialize()
             self._connected = True
+            # Сразу после подключения читаем VIN и определяем марку
+            try:
+                self._obd.read_vehicle_info()
+            except Exception:
+                # VIN читается не на всех машинах — это не критично
+                pass
+
+    def vehicle_info(self) -> dict:
+        """Возвращает определённые марку, VIN и протокол связи."""
+        return {
+            "vin": self._obd.vin,
+            "make": self._obd.make,
+            "protocol": self._obd.protocol,
+        }
 
     def read(self) -> tuple[list[str], dict]:
         with self._lock:
