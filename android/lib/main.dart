@@ -1,8 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 
 import 'api_client.dart';
@@ -205,6 +205,10 @@ class _HomeScreenState extends State<HomeScreen> {
   String _adviceCost = "";
   String _adviceStatus = "";
 
+  // --- Журнал работы (для поиска причин сбоев) ---
+  final List<String> _logs = [];
+  static const int _logLimit = 500;
+
   final StringBuffer _replyBuffer = StringBuffer();
   Completer<String>? _replyCompleter;
   Timer? _pollTimer;
@@ -312,9 +316,11 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _connect(BluetoothDevice device) async {
+    _log("Подключение к ${device.platformName}");
     _device = device;
     _device!.connectionState.listen((state) {
       if (state == BluetoothConnectionState.disconnected && mounted) {
+        _log("Соединение потеряно");
         setState(() {
           _connected = false;
           _status = "Соединение потеряно";
@@ -345,9 +351,11 @@ class _HomeScreenState extends State<HomeScreen> {
     }
 
     if (_rx == null || _tx == null) {
+      _log("Ошибка: не найдены характеристики FFF1/FFF2");
       setState(() => _status = "Не найдены характеристики ELM327");
       return;
     }
+    _log("Каналы найдены: FFF1 уведомления, FFF2 запись");
 
     _tx!.lastValueStream.listen((value) {
       _onData(value);
@@ -387,7 +395,10 @@ class _HomeScreenState extends State<HomeScreen> {
   // ----------------------------------------------------------
   Future<String> _command(String cmd,
       {Duration timeout = const Duration(seconds: 3)}) async {
-    if (_rx == null) return "";
+    if (_rx == null) {
+      _log("→ $cmd: канал записи не найден");
+      return "";
+    }
     _replyBuffer.clear();
     _replyCompleter = Completer<String>();
 
@@ -399,10 +410,23 @@ class _HomeScreenState extends State<HomeScreen> {
     await _rx!.write(bytes, withoutResponse: withoutResponse);
 
     try {
-      return await _replyCompleter!.future.timeout(timeout);
+      final answer = await _replyCompleter!.future.timeout(timeout);
+      _log("→ $cmd  ← ${_shorten(answer)}");
+      return answer;
     } on TimeoutException {
-      return _replyBuffer.toString();
+      final partial = _replyBuffer.toString();
+      _log("→ $cmd  ← таймаут, получено: ${_shorten(partial)}");
+      return partial;
     }
+  }
+
+  /// Сокращает длинный ответ для журнала.
+  String _shorten(String text, {int limit = 120}) {
+    final oneLine = text.replaceAll("\r", "").replaceAll("\n", " ").trim();
+    if (oneLine.length <= limit) {
+      return oneLine.isEmpty ? "(пусто)" : oneLine;
+    }
+    return "${oneLine.substring(0, limit)}…";
   }
 
   Future<void> _initialize() async {
@@ -422,6 +446,7 @@ class _HomeScreenState extends State<HomeScreen> {
       final answer =
           await _command("0100", timeout: const Duration(seconds: 4));
       if (answer.contains("41")) {
+        _log("Протокол: ${protocol[1]}");
         setState(() => _protocolName = protocol[1]);
         break;
       }
@@ -450,6 +475,8 @@ class _HomeScreenState extends State<HomeScreen> {
       vin = vin.substring(vin.length - 17);
     }
     final make = vin.length == 17 ? _vinToMake(vin) : "";
+
+    _log("VIN: ${vin.isEmpty ? "не прочитан" : vin}, марка: ${make.isEmpty ? "?" : make}");
 
     if (mounted) {
       setState(() {
@@ -658,6 +685,8 @@ class _HomeScreenState extends State<HomeScreen> {
       }
     }
 
+    _log("Коды ошибок: ${codes.isEmpty ? "нет" : codes.toSet().join(", ")}");
+
     setState(() {
       _dtcCodes = codes.toSet().toList();
       _status = "Подключено";
@@ -670,6 +699,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final answer = await _command("04", timeout: const Duration(seconds: 6));
     final text = answer.replaceAll(RegExp(r"\s"), "").toUpperCase();
     final ok = text.contains("44") || text.startsWith("OK");
+    _log(ok ? "Ошибки стёрты" : "Не удалось стереть ошибки: ${_shorten(answer)}");
 
     setState(() {
       _status = ok ? "Ошибки стёрты" : "Не удалось стереть ошибки";
@@ -825,6 +855,8 @@ class _HomeScreenState extends State<HomeScreen> {
       _adviceCost = "";
     });
 
+    _log("Запрос ИИ: коды=${_dtcCodes.isEmpty ? "нет" : _dtcCodes.join(",")}");
+
     try {
       final data = await client.askAdvice(
         codes: _dtcCodes,
@@ -834,6 +866,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
       setState(() {
         if (data["error"] != null) {
+          _log("Ошибка ИИ: ${data["error"]}");
           _adviceStatus = data["error"].toString();
         } else {
           _adviceText = (data["advice"] ?? "").toString();
@@ -843,6 +876,7 @@ class _HomeScreenState extends State<HomeScreen> {
         }
       });
     } catch (error) {
+      _log("Нет связи с облаком: $error");
       setState(() => _adviceStatus = "Нет связи с сервером: $error");
     } finally {
       if (mounted) {
@@ -952,6 +986,107 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   // ----------------------------------------------------------
+  //  Журнал работы
+  // ----------------------------------------------------------
+  /// Добавляет запись в журнал с отметкой времени.
+  void _log(String message) {
+    final now = DateTime.now();
+    String two(int value) => value.toString().padLeft(2, "0");
+    final stamp =
+        "${two(now.hour)}:${two(now.minute)}:${two(now.second)}";
+    _logs.add("[$stamp] $message");
+    if (_logs.length > _logLimit) {
+      _logs.removeAt(0);
+    }
+  }
+
+  /// Открывает экран журнала: можно прочитать, скопировать или очистить.
+  Future<void> _openLogs() async {
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return Dialog(
+              backgroundColor: const Color(0xFF172029),
+              insetPadding: const EdgeInsets.all(16),
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        const Expanded(
+                          child: Text("Журнал работы",
+                              style: TextStyle(
+                                  fontSize: 15, fontWeight: FontWeight.bold)),
+                        ),
+                        TextButton(
+                          onPressed: () async {
+                            final messenger = ScaffoldMessenger.of(context);
+                            await Clipboard.setData(
+                                ClipboardData(text: _logs.join("\n")));
+                            messenger.showSnackBar(
+                              const SnackBar(
+                                  content: Text("Журнал скопирован")),
+                            );
+                          },
+                          child: const Text("Копировать"),
+                        ),
+                        TextButton(
+                          onPressed: () => setDialogState(_logs.clear),
+                          child: const Text("Очистить"),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    SizedBox(
+                      height: MediaQuery.of(context).size.height * 0.6,
+                      width: double.infinity,
+                      child: Container(
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF0E141A),
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(color: const Color(0xFF26333F)),
+                        ),
+                        child: _logs.isEmpty
+                            ? const Text("Журнал пуст",
+                                style: TextStyle(
+                                    fontSize: 12, color: Colors.grey))
+                            : SingleChildScrollView(
+                                reverse: true,
+                                child: SelectableText(
+                                  _logs.join("\n"),
+                                  style: const TextStyle(
+                                      fontSize: 11,
+                                      height: 1.4,
+                                      fontFamily: "monospace"),
+                                ),
+                              ),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: TextButton(
+                        onPressed: () => Navigator.pop(dialogContext),
+                        child: const Text("Закрыть"),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  // ----------------------------------------------------------
   //  Интерфейс
   // ----------------------------------------------------------
   @override
@@ -962,6 +1097,11 @@ class _HomeScreenState extends State<HomeScreen> {
         backgroundColor: const Color(0xFF172029),
         foregroundColor: Colors.white,
         actions: [
+          IconButton(
+            icon: const Icon(Icons.receipt_long),
+            tooltip: "Журнал работы",
+            onPressed: _openLogs,
+          ),
           IconButton(
             icon: const Icon(Icons.refresh),
             onPressed: _connected ? _readPids : _startScan,
