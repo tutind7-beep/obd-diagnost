@@ -179,8 +179,9 @@ class _HomeScreenState extends State<HomeScreen> {
   String _protocolName = ""; // определённый протокол связи
   String _vin = ""; // VIN, прочитанный из ЭБУ
   String _detectedMake = ""; // марка, определённая по VIN
-  Map<String, double?> _extended = {}; // расширенные параметры
-  String _extStatus = ""; // статус чтения расширенных параметров
+  List<String> _chartKeys = []; // параметры, для которых строятся графики
+  final Map<String, List<double>> _chartData = {}; // истории значений для графиков
+  String _chartChoice = "rpm"; // выбранный в списке параметр
 
   final StringBuffer _replyBuffer = StringBuffer();
   Completer<String>? _replyCompleter;
@@ -528,11 +529,73 @@ class _HomeScreenState extends State<HomeScreen> {
       }
     }
 
+    // Читаем параметры, для которых построены графики (если их нет среди основных)
+    final chartValues = <String, double?>{};
+    for (final key in _chartKeys) {
+      if (live.containsKey(key) && live[key] != null) {
+        chartValues[key] = live[key];
+        continue;
+      }
+      final param = _paramByKey(key);
+      if (param == null) {
+        continue;
+      }
+      final answer = await _command(param[1], timeout: const Duration(seconds: 2));
+      final expectedPid = int.parse(param[1].substring(2), radix: 16);
+      for (final line in answer.split("\n")) {
+        final raw = _parseLine(line);
+        if (raw != null &&
+            raw.length >= 3 &&
+            raw[0] == 0x41 &&
+            raw[1] == expectedPid) {
+          chartValues[key] = _parsePidValue(param[2], raw.sublist(2));
+        }
+      }
+    }
+
     if (mounted) {
       setState(() {
         _live = live;
+        // Добавляем значения в историю графиков
+        chartValues.forEach((key, value) {
+          if (value == null) {
+            return;
+          }
+          final history = _chartData.putIfAbsent(key, () => []);
+          history.add(value);
+          if (history.length > 40) {
+            history.removeAt(0);
+          }
+        });
       });
     }
+  }
+
+  /// Находит описание параметра по ключу: [key, pid, kind, label, unit]
+  List<String>? _paramByKey(String key) {
+    if (pidCommands.containsKey(key)) {
+      final info = pidCommands[key]!;
+      return [key, info[0], info[1], tileLabels[key] ?? key, tileUnits[key] ?? ""];
+    }
+    for (final param in extendedParams) {
+      if (param[0] == key) {
+        return param;
+      }
+    }
+    return null;
+  }
+
+  /// Полный список параметров для выбора графика
+  List<List<String>> get _allParams {
+    final list = <List<String>>[];
+    pidCommands.forEach((key, info) {
+      list.add([
+        key, info[0], info[1],
+        tileLabels[key] ?? key, tileUnits[key] ?? "",
+      ]);
+    });
+    list.addAll(extendedParams);
+    return list;
   }
 
   // ----------------------------------------------------------
@@ -575,35 +638,6 @@ class _HomeScreenState extends State<HomeScreen> {
     if (ok) {
       await _readPids();
     }
-  }
-
-  /// Читает расширенный набор параметров.
-  Future<void> _readExtended() async {
-    setState(() => _extStatus = "Читаю все датчики…");
-    final values = <String, double?>{};
-
-    for (final param in extendedParams) {
-      final key = param[0];
-      final pid = param[1];
-      final kind = param[2];
-      final answer = await _command(pid, timeout: const Duration(seconds: 2));
-
-      final expectedPid = int.parse(pid.substring(2), radix: 16);
-      for (final line in answer.split("\n")) {
-        final raw = _parseLine(line);
-        if (raw != null &&
-            raw.length >= 3 &&
-            raw[0] == 0x41 &&
-            raw[1] == expectedPid) {
-          values[key] = _parsePidValue(kind, raw.sublist(2));
-        }
-      }
-    }
-
-    setState(() {
-      _extended = values;
-      _extStatus = "Готово";
-    });
   }
 
   String _decodeDtc(int first, int second) {
@@ -654,7 +688,7 @@ class _HomeScreenState extends State<HomeScreen> {
             const SizedBox(height: 16),
             _dtcSection(),
             const SizedBox(height: 16),
-            _extendedSection(),
+            _chartsSection(),
             const SizedBox(height: 16),
             _scanSection(),
           ],
@@ -851,13 +885,8 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  Widget _extendedSection() {
-    // Группируем параметры по системам автомобиля
-    final groups = <String, List<List<String>>>{};
-    for (final param in extendedParams) {
-      groups.putIfAbsent(param[4], () => []).add(param);
-    }
-
+  /// Панель графиков: пользователь сам выбирает, что отслеживать.
+  Widget _chartsSection() {
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(16),
@@ -869,72 +898,111 @@ class _HomeScreenState extends State<HomeScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text("Все параметры",
+          const Text("Графики",
               style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
           const SizedBox(height: 6),
-          const Text("Полный набор датчиков: чтение занимает несколько секунд.",
+          const Text("Выберите параметр — график появится и будет обновляться.",
               style: TextStyle(fontSize: 12, color: Colors.grey)),
           const SizedBox(height: 10),
           Row(
             children: [
-              ElevatedButton(
-                onPressed: _connected ? _readExtended : null,
-                child: const Text("Прочитать все"),
+              Expanded(
+                child: DropdownButton<String>(
+                  isExpanded: true,
+                  value: _chartChoice,
+                  dropdownColor: const Color(0xFF1F2A35),
+                  items: _allParams
+                      .map((param) => DropdownMenuItem(
+                            value: param[0],
+                            child: Text("${param[3]} (${param[4]})",
+                                overflow: TextOverflow.ellipsis),
+                          ))
+                      .toList(),
+                  onChanged: (value) {
+                    if (value != null) {
+                      setState(() => _chartChoice = value);
+                    }
+                  },
+                ),
               ),
               const SizedBox(width: 10),
-              Text(_extStatus, style: const TextStyle(color: Colors.grey)),
+              ElevatedButton(
+                onPressed: _addChart,
+                child: const Text("Добавить"),
+              ),
             ],
           ),
           const SizedBox(height: 12),
-          ...groups.entries.map((entry) {
-            final rows = entry.value
-                .where((param) => _extended[param[0]] != null)
-                .toList();
-            if (rows.isEmpty) {
-              return const SizedBox.shrink();
-            }
+          if (_chartKeys.isEmpty)
+            const Text("Графики не выбраны.",
+                style: TextStyle(color: Colors.grey))
+          else
+            ..._chartKeys.map((key) => _chartCard(key)),
+        ],
+      ),
+    );
+  }
 
-            return Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(entry.key,
-                    style: const TextStyle(
-                        fontSize: 12,
-                        color: Colors.grey,
-                        fontWeight: FontWeight.w600)),
-                const SizedBox(height: 6),
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: rows.map((param) {
-                    final value = _extended[param[0]]!;
-                    return Container(
-                      width: 150,
-                      padding: const EdgeInsets.all(10),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF1F2A35),
-                        borderRadius: BorderRadius.circular(10),
-                        border: Border.all(color: const Color(0xFF26333F)),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(param[3],
-                              style: const TextStyle(
-                                  fontSize: 11, color: Colors.grey)),
-                          const SizedBox(height: 2),
-                          Text("${_format(value)} ${param[4]}",
-                              style: const TextStyle(
-                                  fontSize: 16, fontWeight: FontWeight.bold)),
-                        ],
-                      ),
-                    );
-                  }).toList(),
-                ),
-                const SizedBox(height: 12),
-              ],
-            );
-          }),
+  void _addChart() {
+    if (_chartKeys.contains(_chartChoice)) {
+      return;
+    }
+    setState(() {
+      _chartKeys = [..._chartKeys, _chartChoice];
+      _chartData[_chartChoice] = [];
+    });
+  }
+
+  Widget _chartCard(String key) {
+    final param = _paramByKey(key);
+    final label = param == null ? key : "${param[3]}, ${param[4]}";
+    final values = _chartData[key] ?? [];
+    final last = values.isEmpty ? null : values.last;
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1F2A35),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFF26333F)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(label,
+                    style: const TextStyle(fontSize: 12, color: Colors.grey)),
+              ),
+              Text(
+                last == null ? "—" : "${_format(last)} ${param?[4] ?? ""}",
+                style: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.bold,
+                    color: Color(0xFF35C28F)),
+              ),
+              const SizedBox(width: 8),
+              GestureDetector(
+                onTap: () {
+                  setState(() {
+                    _chartKeys = _chartKeys.where((item) => item != key).toList();
+                    _chartData.remove(key);
+                  });
+                },
+                child: const Icon(Icons.close, size: 18, color: Colors.grey),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          SizedBox(
+            height: 120,
+            width: double.infinity,
+            child: CustomPaint(
+              painter: LineChartPainter(values),
+            ),
+          ),
         ],
       ),
     );
@@ -973,4 +1041,55 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
     );
   }
+}
+
+/// Рисует график изменения параметра во времени.
+class LineChartPainter extends CustomPainter {
+  LineChartPainter(this.values);
+
+  final List<double> values;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final background = Paint()..color = const Color(0xFF172029);
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+        Rect.fromLTWH(0, 0, size.width, size.height),
+        const Radius.circular(10),
+      ),
+      background,
+    );
+
+    if (values.length < 2) {
+      return;
+    }
+
+    const padding = 10.0;
+    final min = values.reduce((a, b) => a < b ? a : b);
+    final max = values.reduce((a, b) => a > b ? a : b);
+    final range = (max - min) == 0 ? 1.0 : (max - min);
+
+    final path = Path();
+    for (var i = 0; i < values.length; i++) {
+      final x = padding + (size.width - padding * 2) * i / (values.length - 1);
+      final y = size.height -
+          padding -
+          (size.height - padding * 2) * (values[i] - min) / range;
+      if (i == 0) {
+        path.moveTo(x, y);
+      } else {
+        path.lineTo(x, y);
+      }
+    }
+
+    final line = Paint()
+      ..color = const Color(0xFF35C28F)
+      ..strokeWidth = 2
+      ..style = PaintingStyle.stroke
+      ..strokeJoin = StrokeJoin.round;
+    canvas.drawPath(path, line);
+  }
+
+  @override
+  bool shouldRepaint(LineChartPainter oldDelegate) => true;
 }
