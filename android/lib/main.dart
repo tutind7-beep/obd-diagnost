@@ -96,6 +96,18 @@ const List<String> symptomChoices = [
   "нестабильные холостые обороты",
 ];
 
+/// Типовые блоки управления: [название, адрес запроса, адрес ответа]
+const List<List<String>> defaultModules = [
+  ["Двигатель (ECM)", "7E0", "7E8"],
+  ["Коробка передач (TCM)", "7E1", "7E9"],
+  ["Блок 3", "7E2", "7EA"],
+  ["Блок 4", "7E3", "7EB"],
+  ["Блок 5", "7E4", "7EC"],
+  ["Блок 6", "7E5", "7ED"],
+  ["Блок 7", "7E6", "7EE"],
+  ["Блок 8", "7E7", "7EF"],
+];
+
 /// Сколько точек храним в истории графиков (около 5 минут)
 const int chartMaxPoints = 120;
 
@@ -223,6 +235,11 @@ class _HomeScreenState extends State<HomeScreen> {
   String _advicePart = "";
   String _adviceCost = "";
   String _adviceStatus = "";
+
+  // --- Блоки управления ---
+  List<Map<String, dynamic>> _modules = [];
+  String _moduleStatus = "";
+  bool _moduleBusy = false;
 
   // --- Симптомы и голосовой ввод ---
   final Set<String> _symptoms = {};
@@ -1017,6 +1034,123 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   // ----------------------------------------------------------
+  //  Блоки управления: чтение кодов по CAN-адресам
+  // ----------------------------------------------------------
+  /// Читает коды из одного блока по адресам запроса и ответа.
+  Future<List<String>> _readModuleCodes(String requestId, String responseId) async {
+    await _command("ATSH$requestId");
+    await _command("ATCRA$responseId");
+    await _command("ATCAF1");
+    await _command("ATFCSH$requestId");
+    await _command("ATFCSD300000");
+    await _command("ATFCSM1");
+
+    final codes = <String>[];
+    try {
+      final answer = await _command("1902FF", timeout: const Duration(seconds: 4));
+      codes.addAll(_parseUdsCodes(answer));
+      if (codes.isEmpty) {
+        final fallback = await _command("03", timeout: const Duration(seconds: 3));
+        codes.addAll(_parseMode03Codes(fallback));
+      }
+    } finally {
+      await _command("ATFCSM0");
+      await _command("ATCRA");
+      await _command("ATSH7DF");
+      await _command("ATCAF1");
+    }
+    return codes.toSet().toList();
+  }
+
+  /// Разбирает ответ UDS (сервис 19, подфункция 02).
+  List<String> _parseUdsCodes(String answer) {
+    final codes = <String>[];
+    for (final line in answer.split("\n")) {
+      var cleaned = line.replaceAll(">", "").replaceAll(" ", "").replaceAll("\r", "").toUpperCase();
+      if (cleaned.isEmpty) continue;
+
+      final marker = cleaned.indexOf("5902");
+      if (marker < 0) continue;
+
+      cleaned = cleaned.substring(marker + 4);
+      if (cleaned.length < 8) continue;
+      cleaned = cleaned.substring(2); // маска статусов
+
+      for (var i = 0; i + 5 < cleaned.length; i += 6) {
+        final chunk = cleaned.substring(i, i + 6);
+        try {
+          final first = int.parse(chunk.substring(0, 2), radix: 16);
+          final second = int.parse(chunk.substring(2, 4), radix: 16);
+          final code = _decodeDtc(first, second);
+          if (code.isNotEmpty) codes.add(code);
+        } catch (error) {
+          // пропускаем некорректный фрагмент
+        }
+      }
+    }
+    return codes;
+  }
+
+  /// Разбирает ответ режима 03 (обычные OBD-коды).
+  List<String> _parseMode03Codes(String answer) {
+    final codes = <String>[];
+    for (final line in answer.split("\n")) {
+      final raw = _parseLine(line);
+      if (raw != null && raw.isNotEmpty && raw[0] == 0x43) {
+        final data = raw.sublist(1);
+        for (var i = 0; i + 1 < data.length; i += 2) {
+          final code = _decodeDtc(data[i], data[i + 1]);
+          if (code.isNotEmpty) codes.add(code);
+        }
+      }
+    }
+    return codes;
+  }
+
+  /// Перебирает типовые блоки и собирает коды.
+  Future<void> _scanModules() async {
+    if (!_connected) {
+      setState(() => _moduleStatus = "Сначала подключитесь к адаптеру.");
+      return;
+    }
+
+    setState(() {
+      _moduleBusy = true;
+      _moduleStatus = "Сканирую блоки…";
+      _modules = [];
+    });
+    _log("Сканирование блоков: ${defaultModules.length} адресов");
+
+    final found = <Map<String, dynamic>>[];
+    for (final module in defaultModules) {
+      final name = module[0];
+      final requestId = module[1];
+      final responseId = module[2];
+
+      try {
+        final codes = await _readModuleCodes(requestId, responseId);
+        _log("Блок $name ($requestId): ${codes.isEmpty ? "нет кодов" : codes.join(", ")}");
+        found.add({
+          "name": name,
+          "request": requestId,
+          "response": responseId,
+          "codes": codes,
+        });
+      } catch (error) {
+        _log("Блок $name ($requestId): ошибка $error");
+      }
+    }
+
+    setState(() {
+      _modules = found;
+      _moduleBusy = false;
+      _moduleStatus = found.isEmpty
+          ? "Ни один блок не ответил"
+          : "Ответили блоков: ${found.length}";
+    });
+  }
+
+  // ----------------------------------------------------------
   //  Симптомы: голосовой ввод и разбор ИИ
   // ----------------------------------------------------------
   Future<void> _initSpeech() async {
@@ -1283,6 +1417,8 @@ class _HomeScreenState extends State<HomeScreen> {
             _liveTiles(),
             const SizedBox(height: 16),
             _dtcSection(),
+            const SizedBox(height: 16),
+            _modulesSection(),
             const SizedBox(height: 16),
             _chartsSection(),
             const SizedBox(height: 16),
@@ -1707,6 +1843,94 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   /// Панель облака: аккаунт, советы ИИ и история.
+  /// Панель блоков управления: коды не только из двигателя.
+  Widget _modulesSection() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFF172029),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFF26333F)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text("Блоки управления",
+              style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 6),
+          const Text(
+            "Читает ошибки из коробки и других блоков. "
+            "Адреса блоков зависят от модели и года — часть может не ответить.",
+            style: TextStyle(fontSize: 12, color: Colors.grey),
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: [
+              ElevatedButton(
+                onPressed: _moduleBusy ? null : _scanModules,
+                child: Text(_moduleBusy ? "Сканирую…" : "Сканировать блоки"),
+              ),
+              if (_moduleStatus.isNotEmpty)
+                Center(
+                  child: Text(_moduleStatus,
+                      style: const TextStyle(fontSize: 12, color: Colors.grey)),
+                ),
+            ],
+          ),
+          ..._modules.map((module) {
+            final codes = (module["codes"] as List).cast<String>();
+            return Container(
+              margin: const EdgeInsets.only(top: 10),
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: const Color(0xFF1F2A35),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: const Color(0xFF26333F)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    "${module["name"]} (${module["request"]} → ${module["response"]})",
+                    style: const TextStyle(
+                        fontSize: 13, fontWeight: FontWeight.w600),
+                  ),
+                  const SizedBox(height: 6),
+                  if (codes.isEmpty)
+                    const Text("Ошибок нет",
+                        style: TextStyle(fontSize: 12, color: Colors.grey))
+                  else
+                    Wrap(
+                      spacing: 6,
+                      runSpacing: 6,
+                      children: codes
+                          .map((code) => Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 10, vertical: 4),
+                                decoration: BoxDecoration(
+                                  color: const Color(0x29E5484D),
+                                  borderRadius: BorderRadius.circular(999),
+                                ),
+                                child: Text(code,
+                                    style: const TextStyle(
+                                        fontSize: 12,
+                                        color: Color(0xFFFF9A9C),
+                                        fontWeight: FontWeight.bold)),
+                              ))
+                          .toList(),
+                    ),
+                ],
+              ),
+            );
+          }),
+        ],
+      ),
+    );
+  }
+
   /// Панель диагностики по симптомам с голосовым вводом.
   Widget _symptomsSection() {
     return Container(
