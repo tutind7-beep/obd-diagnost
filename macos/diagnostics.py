@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from dtc_database import lookup_dtc
+
 # Порядок вывода: сначала самое важное
 SEVERITY_ORDER = {"СТОП": 0, "СКОРО В СЕРВИС": 1, "НАБЛЮДАТЬ": 2}
 
@@ -248,6 +250,19 @@ def find_rule(code: str) -> Hint | None:
                 "если ошибка перейдёт — виновата деталь.",
                 "Проверь компрессию в этом цилиндре.",
                 "Проверь форсунку.",
+            ],
+        )
+
+    # Расширенная база кодов: название и пояснение на любой известный код
+    found = lookup_dtc(code)
+    if found is not None:
+        title, note = found
+        return Hint(
+            "НАБЛЮДАТЬ",
+            f"{title} ({code})",
+            [
+                f"Пояснение: {note}.",
+                "Нажми «Спросить ИИ» — он разберёт причину и подскажет, что проверить.",
             ],
         )
 

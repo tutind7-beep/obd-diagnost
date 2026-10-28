@@ -91,6 +91,28 @@ class BLESource:
                 self._last_error = str(error)
                 raise
 
+    def read_readiness(self) -> dict:
+        """Готовность систем к техосмотру."""
+        with self._lock:
+            self._ensure_connected()
+            try:
+                return self._obd.read_readiness()
+            except Exception as error:
+                self._connected = False
+                self._last_error = str(error)
+                raise
+
+    def read_freeze_frame(self) -> dict:
+        """Стоп-кадр по записанной ошибке."""
+        with self._lock:
+            self._ensure_connected()
+            try:
+                return self._obd.read_freeze_frame()
+            except Exception as error:
+                self._connected = False
+                self._last_error = str(error)
+                raise
+
     def read_extended(self) -> dict:
         """Читает все параметры каталога (для расширенного экрана)."""
         with self._lock:

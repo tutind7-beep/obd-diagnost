@@ -62,6 +62,17 @@ const elements = {
   chartClear: document.getElementById("chart-clear"),
   chartsContainer: document.getElementById("charts-container"),
   chartsEmpty: document.getElementById("charts-empty"),
+  readinessBtn: document.getElementById("readiness-btn"),
+  readinessStatus: document.getElementById("readiness-status"),
+  readinessResult: document.getElementById("readiness-result"),
+  freezeBtn: document.getElementById("freeze-btn"),
+  freezeStatus: document.getElementById("freeze-status"),
+  freezeResult: document.getElementById("freeze-result"),
+  adapterTestBtn: document.getElementById("adapter-test-btn"),
+  adapterTestStatus: document.getElementById("adapter-test-status"),
+  adapterTestResult: document.getElementById("adapter-test-result"),
+  reportCsvBtn: document.getElementById("report-csv-btn"),
+  reportPdfBtn: document.getElementById("report-pdf-btn"),
   adviceBtn: document.getElementById("advice-btn"),
   adviceStatus: document.getElementById("advice-status"),
   adviceText: document.getElementById("advice-text"),
@@ -1377,6 +1388,201 @@ elements.adapterConnect.addEventListener("click", async () => {
     elements.adapterConnect.disabled = false;
   }
 });
+
+// ---------- Готовность к техосмотру ----------
+elements.readinessBtn.addEventListener("click", async () => {
+  elements.readinessStatus.textContent = "Проверяю…";
+  elements.readinessBtn.disabled = true;
+  elements.readinessResult.classList.add("hidden");
+
+  try {
+    const response = await fetch("/api/readiness", { cache: "no-store" });
+    const data = await response.json();
+
+    if (data.error) {
+      elements.readinessStatus.textContent = data.error;
+      return;
+    }
+
+    renderReadiness(data.readiness);
+    elements.readinessStatus.textContent = "";
+  } catch (error) {
+    elements.readinessStatus.textContent = "Сервер недоступен: " + error.message;
+  } finally {
+    elements.readinessBtn.disabled = false;
+  }
+});
+
+function renderReadiness(readiness) {
+  elements.readinessResult.textContent = "";
+  elements.readinessResult.classList.remove("hidden");
+
+  const summary = document.createElement("div");
+  summary.className = "readiness-summary " + (readiness.ready ? "good" : "warn");
+  summary.textContent = readiness.ready
+    ? "Все самопроверки завершены — к техосмотру готов"
+    : "Есть незавершённые самопроверки — техосмотр может не пройти";
+  elements.readinessResult.appendChild(summary);
+
+  const mil = document.createElement("p");
+  mil.className = "readiness-mil";
+  mil.textContent = readiness.mil_on
+    ? "Лампа Check Engine горит, записано кодов: " + readiness.dtc_count
+    : "Лампа Check Engine не горит";
+  elements.readinessResult.appendChild(mil);
+
+  (readiness.items || []).forEach((item) => {
+    const row = document.createElement("div");
+    row.className = "readiness-row " + (item.incomplete ? "bad" : "ok");
+    row.textContent = (item.incomplete ? "⏳ " : "✅ ") + item.name;
+    elements.readinessResult.appendChild(row);
+  });
+}
+
+// ---------- Стоп-кадр ----------
+elements.freezeBtn.addEventListener("click", async () => {
+  elements.freezeStatus.textContent = "Читаю…";
+  elements.freezeBtn.disabled = true;
+  elements.freezeResult.classList.add("hidden");
+
+  try {
+    const response = await fetch("/api/freeze", { cache: "no-store" });
+    const data = await response.json();
+
+    if (data.error) {
+      elements.freezeStatus.textContent = data.error;
+      return;
+    }
+
+    renderFreeze(data.freeze);
+    elements.freezeStatus.textContent = "";
+  } catch (error) {
+    elements.freezeStatus.textContent = "Сервер недоступен: " + error.message;
+  } finally {
+    elements.freezeBtn.disabled = false;
+  }
+});
+
+function renderFreeze(freeze) {
+  elements.freezeResult.textContent = "";
+
+  const keys = Object.keys(freeze || {});
+  if (!keys.length) {
+    elements.freezeResult.classList.remove("hidden");
+    elements.freezeResult.textContent = "Стоп-кадр пуст — ошибок нет или машина их не записала.";
+    return;
+  }
+
+  const grid = document.createElement("div");
+  grid.className = "params-grid";
+
+  keys.forEach((key) => {
+    const item = freeze[key];
+    const card = document.createElement("div");
+    card.className = "param-card";
+
+    const label = document.createElement("div");
+    label.className = "param-label";
+    label.textContent = item.label;
+
+    const value = document.createElement("div");
+    value.className = "param-value";
+    value.textContent = String(item.value);
+    if (item.unit) {
+      const unit = document.createElement("span");
+      unit.className = "param-unit";
+      unit.textContent = item.unit;
+      value.appendChild(unit);
+    }
+
+    card.append(label, value);
+    grid.appendChild(card);
+  });
+
+  elements.freezeResult.appendChild(grid);
+  elements.freezeResult.classList.remove("hidden");
+}
+
+// ---------- Проверка адаптера ----------
+elements.adapterTestBtn.addEventListener("click", async () => {
+  elements.adapterTestStatus.textContent = "Проверяю…";
+  elements.adapterTestBtn.disabled = true;
+  elements.adapterTestResult.classList.add("hidden");
+
+  try {
+    const response = await fetch("/api/adapter/test", { cache: "no-store" });
+    const data = await response.json();
+
+    if (data.error) {
+      elements.adapterTestStatus.textContent = data.error;
+      return;
+    }
+
+    renderAdapterTest(data.test);
+    elements.adapterTestStatus.textContent = "";
+  } catch (error) {
+    elements.adapterTestStatus.textContent = "Сервер недоступен: " + error.message;
+  } finally {
+    elements.adapterTestBtn.disabled = false;
+  }
+});
+
+function renderAdapterTest(test) {
+  const rows = [
+    ["Источник", test.source],
+    ["Версия адаптера", test.version || "—"],
+    ["Протокол", test.protocol || "—"],
+    ["VIN", test.vin || "—"],
+    ["Марка", test.make || "—"],
+    ["Скорость ответа", test.response_ms == null ? "—" : test.response_ms + " мс"],
+    ["Поддерживаемых параметров", test.pid_count == null ? "—" : String(test.pid_count)],
+  ];
+
+  if (test.note) {
+    rows.push(["Примечание", test.note]);
+  }
+
+  elements.adapterTestResult.textContent = "";
+  rows.forEach(([label, value]) => {
+    const row = document.createElement("div");
+    row.className = "readiness-row ok";
+    row.textContent = label + ": " + value;
+    elements.adapterTestResult.appendChild(row);
+  });
+  elements.adapterTestResult.classList.remove("hidden");
+}
+
+// ---------- Экспорт отчёта ----------
+async function downloadReport(path, fallbackName) {
+  const response = await fetch(path);
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    alert(data.error || "Не удалось сформировать отчёт");
+    return;
+  }
+
+  const disposition = response.headers.get("Content-Disposition") || "";
+  const match = disposition.match(/filename="?([^";]+)"?/);
+  const filename = match ? match[1] : fallbackName;
+
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+elements.reportCsvBtn.addEventListener("click", () =>
+  downloadReport("/api/report.csv", "obd_report.csv")
+);
+
+elements.reportPdfBtn.addEventListener("click", () =>
+  downloadReport("/api/report.pdf", "obd_report.pdf")
+);
 
 // ---------- Кнопки графиков ----------
 elements.chartAdd.addEventListener("click", addChart);

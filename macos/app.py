@@ -607,6 +607,219 @@ def api_connect():
     return jsonify({"ok": True, "type": source.name, "error": None})
 
 
+@app.get("/api/readiness")
+def api_readiness():
+    """Готовность систем к техосмотру."""
+    active = current_source()
+    if not hasattr(active, "read_readiness"):
+        return jsonify({"error": "Источник данных не поддерживает готовность систем."}), 400
+
+    try:
+        data = active.read_readiness()
+    except Exception as error:
+        return jsonify({"error": str(error)}), 503
+
+    return jsonify({"readiness": data, "error": None})
+
+
+@app.get("/api/freeze")
+def api_freeze():
+    """Стоп-кадр: параметры в момент появления ошибки."""
+    active = current_source()
+    if not hasattr(active, "read_freeze_frame"):
+        return jsonify({"error": "Источник данных не поддерживает стоп-кадр."}), 400
+
+    try:
+        data = active.read_freeze_frame()
+    except Exception as error:
+        return jsonify({"error": str(error)}), 503
+
+    return jsonify({"freeze": data, "error": None})
+
+
+@app.get("/api/adapter/test")
+def api_adapter_test():
+    """Проверка качества адаптера: версия, протокол, поддерживаемые PID, скорость."""
+    active = current_source()
+
+    result = {
+        "source": getattr(active, "name", "demo"),
+        "protocol": getattr(active, "protocol", ""),
+        "vin": getattr(active, "vin", ""),
+        "make": getattr(active, "make", ""),
+        "response_ms": None,
+        "supported_pids": [],
+        "version": "",
+    }
+
+    obd_device = getattr(active, "_obd", None)
+    if obd_device is None or not hasattr(obd_device, "command"):
+        result["note"] = "Демо-режим: адаптер не опрашивается."
+        return jsonify({"test": result, "error": None})
+
+    try:
+        started = time.monotonic()
+        version = obd_device.command("ATI", 3)
+        result["response_ms"] = int((time.monotonic() - started) * 1000)
+        result["version"] = " ".join(version.split())
+        result["protocol"] = getattr(obd_device, "protocol", result["protocol"])
+
+        # Собираем список поддерживаемых PID из ответов 0100/0120/0140
+        supported = []
+        for base in (0x00, 0x20, 0x40):
+            answer = obd_device.command(f"01{base:02X}", 3)
+            for line in answer.splitlines():
+                cleaned = "".join(line.split()).replace(">", "").upper()
+                if len(cleaned) < 12 or not cleaned.startswith("41"):
+                    continue
+                try:
+                    data = bytes.fromhex(cleaned[4:])
+                except ValueError:
+                    continue
+                for index in range(32):
+                    byte_index = index // 8
+                    if byte_index >= len(data):
+                        break
+                    if data[byte_index] & (1 << (7 - index % 8)):
+                        supported.append(base + index + 1)
+        result["supported_pids"] = supported
+        result["pid_count"] = len(supported)
+    except Exception as error:
+        return jsonify({"error": str(error)}), 503
+
+    return jsonify({"test": result, "error": None})
+
+
+@app.get("/api/report.csv")
+def api_report_csv():
+    """Отчёт в CSV — удобно открыть в Excel или отправить в сервис."""
+    active = current_source()
+
+    try:
+        codes, live = active.read()
+    except Exception as error:
+        return jsonify({"error": str(error)}), 503
+
+    codes = normalize_codes(codes)
+    hints = build_hints(codes, live)
+    health = _health_score(hints)
+    vehicle = getattr(active, "make", "") or ""
+
+    lines = [
+        "Раздел;Параметр;Значение;Единица",
+        f"Сводка;Марка;{vehicle};",
+        f"Сводка;Состояние;{health.get('score')};из 100",
+        f"Сводка;Оценка;{health.get('label')};",
+        f"Сводка;Время;{datetime.now().strftime('%d.%m.%Y %H:%M')};",
+    ]
+
+    for key, label in PARAM_LABELS.items():
+        value = live.get(key)
+        if value is not None:
+            lines.append(f"Параметры;{label};{value};")
+
+    for code in codes:
+        lines.append(f"Ошибки;{code};;")
+
+    for hint in hints:
+        lines.append(f"Подсказка;{hint.title};;")
+
+    payload = "\n".join(lines).encode("utf-8-sig")
+    filename = f"obd_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+
+    return send_file(
+        BytesIO(payload),
+        mimetype="text/csv",
+        as_attachment=True,
+        download_name=filename,
+    )
+
+
+@app.get("/api/report.pdf")
+def api_report_pdf():
+    """Отчёт в PDF — печатный документ для автосервиса."""
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.units import mm
+    from reportlab.pdfgen import canvas as pdf_canvas
+
+    active = current_source()
+
+    try:
+        codes, live = active.read()
+    except Exception as error:
+        return jsonify({"error": str(error)}), 503
+
+    codes = normalize_codes(codes)
+    hints = build_hints(codes, live)
+    health = _health_score(hints)
+
+    buffer = BytesIO()
+    pdf = pdf_canvas.Canvas(buffer, pagesize=A4)
+    page_width, page_height = A4
+    left = 20 * mm
+    y = page_height - 20 * mm
+
+    def line(text, size=10, gap=6, bold=False):
+        nonlocal y
+        if y < 25 * mm:
+            pdf.showPage()
+            y = page_height - 20 * mm
+        pdf.setFont("Helvetica-Bold" if bold else "Helvetica", size)
+        pdf.drawString(left, y, text)
+        y -= gap * mm
+
+    line("OBD-Диагност — отчёт о диагностике", 16, 10, bold=True)
+    line(f"Дата: {datetime.now().strftime('%d.%m.%Y %H:%M')}", 10, 8)
+
+    vehicle = getattr(active, "make", "") or "не определено"
+    line(f"Автомобиль: {vehicle}", 10, 8)
+    vin = getattr(active, "vin", "")
+    if vin:
+        line(f"VIN: {vin}", 10, 8)
+    protocol = getattr(active, "protocol", "")
+    if protocol:
+        line(f"Протокол связи: {protocol}", 10, 10)
+
+    line(f"Состояние: {health.get('score')}/100 ({health.get('label')})", 11, 10, bold=True)
+
+    line("Коды ошибок:", 11, 7, bold=True)
+    if codes:
+        for code in codes:
+            line(f"  • {code}", 10, 6)
+    else:
+        line("  Ошибок не найдено", 10, 6)
+
+    y -= 4
+    line("Показания датчиков:", 11, 7, bold=True)
+    for key, label in PARAM_LABELS.items():
+        value = live.get(key)
+        if value is not None:
+            line(f"  {label}: {value}", 9, 5)
+
+    if hints:
+        y -= 4
+        line("Что рекомендуем проверить:", 11, 7, bold=True)
+        for hint in hints[:8]:
+            line(f"  [{hint.severity}] {hint.title}", 9, 5)
+            for action in hint.actions[:3]:
+                line(f"      - {action}", 8, 4.5)
+
+    y -= 4
+    line("Отчёт носит рекомендательный характер и не заменяет осмотр в сервисе.", 8, 5)
+
+    pdf.showPage()
+    pdf.save()
+    buffer.seek(0)
+
+    filename = f"obd_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+    return send_file(
+        buffer,
+        mimetype="application/pdf",
+        as_attachment=True,
+        download_name=filename,
+    )
+
+
 @app.get("/api/report")
 def api_report():
     active = current_source()

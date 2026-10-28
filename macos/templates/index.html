@@ -31,7 +31,9 @@
   <main>
     <section class="panel controls">
       <button id="refresh-btn" type="button">Обновить сейчас</button>
-      <button id="report-btn" class="secondary" type="button">Скачать отчёт</button>
+      <button id="report-btn" class="secondary" type="button">Отчёт (JSON)</button>
+      <button id="report-csv-btn" class="secondary" type="button">CSV</button>
+      <button id="report-pdf-btn" class="secondary" type="button">PDF</button>
       <label class="toggle">
         <input type="checkbox" id="auto-refresh" checked>
         Автообновление
@@ -105,6 +107,30 @@
       </div>
       <div id="dtc-blocks" class="dtc-blocks"></div>
       <div id="hints" class="hints"></div>
+    </section>
+
+    <section class="panel">
+      <h2>Готовность к техосмотру</h2>
+      <p class="advice-subtitle">Показывает, завершены ли самопроверки систем автомобиля.</p>
+      <button id="readiness-btn" class="secondary" type="button">Проверить готовность</button>
+      <span id="readiness-status" class="advice-status"></span>
+      <div id="readiness-result" class="readiness-result hidden"></div>
+    </section>
+
+    <section class="panel">
+      <h2>Стоп-кадр ошибки</h2>
+      <p class="advice-subtitle">Параметры двигателя в момент, когда возникла ошибка.</p>
+      <button id="freeze-btn" class="secondary" type="button">Показать стоп-кадр</button>
+      <span id="freeze-status" class="advice-status"></span>
+      <div id="freeze-result" class="readiness-result hidden"></div>
+    </section>
+
+    <section class="panel">
+      <h2>Проверка адаптера</h2>
+      <p class="advice-subtitle">Версия адаптера, протокол, скорость ответа и число поддерживаемых параметров.</p>
+      <button id="adapter-test-btn" class="secondary" type="button">Проверить адаптер</button>
+      <span id="adapter-test-status" class="advice-status"></span>
+      <div id="adapter-test-result" class="readiness-result hidden"></div>
     </section>
 
     <section class="panel">

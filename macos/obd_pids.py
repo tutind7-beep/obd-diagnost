@@ -399,3 +399,118 @@ def format_value(key: str, value: float | None) -> str:
     if digits == 0:
         return str(int(round(value)))
     return f"{value:.{digits}f}"
+
+
+# ---------------------------------------------------------------------------
+#  Готовность систем (Readiness) — режим 01, PID 01
+# ---------------------------------------------------------------------------
+
+# Названия проверок: (номер байта, номер бита «поддерживается»)
+READINESS_ITEMS = [
+    ("Пропуски зажигания", 1, 0),
+    ("Топливная система", 1, 2),
+    ("Общая диагностика компонентов", 1, 4),
+    ("Катализатор", 2, 0),
+    ("Подогрев катализатора", 2, 2),
+    ("Улавливание паров топлива", 2, 4),
+    ("Подача вторичного воздуха", 2, 6),
+    ("Датчик кислорода", 3, 0),
+    ("Подогрев датчика кислорода", 3, 2),
+    ("EGR / VVT", 3, 4),
+]
+
+
+def parse_readiness(payload: bytes) -> dict:
+    """Разбирает ответ на PID 01: лампа, число кодов и готовность систем.
+
+    payload — байты после «41 01» (обычно 4 байта: A, B, C, D).
+    Возвращает:
+      mil_on — горит ли лампа Check Engine,
+      dtc_count — сколько кодов записано,
+      items — список проверок с признаком supported/incomplete.
+    """
+    if len(payload) < 4:
+        return {"mil_on": False, "dtc_count": 0, "items": [], "ready": False}
+
+    first, second, third, fourth = payload[0], payload[1], payload[2], payload[3]
+    byte_values = {1: second, 2: third, 3: fourth}
+
+    mil_on = bool(first & 0x80)
+    dtc_count = first & 0x7F
+
+    items = []
+    for name, byte_index, bit in READINESS_ITEMS:
+        value = byte_values.get(byte_index, 0)
+        supported = bool(value & (1 << bit))
+        incomplete = bool(value & (1 << (bit + 1)))
+        if supported:
+            items.append(
+                {"name": name, "supported": True, "incomplete": incomplete}
+            )
+
+    # Готов к техосмотру, если ни одна поддерживаемая проверка не «не завершена»
+    ready = all(not item["incomplete"] for item in items)
+
+    return {
+        "mil_on": mil_on,
+        "dtc_count": dtc_count,
+        "items": items,
+        "ready": ready,
+    }
+
+
+# ---------------------------------------------------------------------------
+#  Стоп-кадр (Freeze frame) — режим 02
+# ---------------------------------------------------------------------------
+
+# Какие параметры берём из стоп-кадра: PID -> (ключ, подпись, единица)
+FREEZE_PIDS = {
+    "02": ("dtc", "Код, вызвавший стоп-кадр", ""),
+    "04": ("load", "Нагрузка двигателя", "%"),
+    "05": ("coolant", "Температура ОЖ", "°C"),
+    "0B": ("map", "Давление во впуске", "кПа"),
+    "0C": ("rpm", "Обороты", "об/мин"),
+    "0D": ("speed", "Скорость", "км/ч"),
+    "0F": ("intake_temp", "Темп. воздуха", "°C"),
+    "10": ("maf", "Расход воздуха", "г/с"),
+    "11": ("throttle", "Дроссель", "%"),
+}
+
+
+def parse_freeze_pid(payload: bytes, pid: str) -> float | str | None:
+    """Разбирает один параметр стоп-кадра.
+
+    Ответ режима 02 выглядит как «42 <PID> <номер кадра> <данные>»,
+    поэтому payload должен быть уже без первых двух байт (42 и PID),
+    но вместе с номером кадра.
+    """
+    if len(payload) < 2:
+        return None
+
+    # Первый байт — номер кадра, дальше идут данные
+    data = payload[1:]
+    pid_upper = pid.upper()
+
+    if pid_upper == "02":
+        if len(data) < 2:
+            return None
+        return decode_dtc(data[0], data[1])
+
+    info = {
+        "04": _pct_255,
+        "05": _temp,
+        "0B": _map_kpa,
+        "0C": _rpm,
+        "0D": _byte,
+        "0F": _temp,
+        "10": _maf,
+        "11": _pct_255,
+    }.get(pid_upper)
+
+    if info is None:
+        return None
+
+    try:
+        return info(data)
+    except (IndexError, TypeError):
+        return None

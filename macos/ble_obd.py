@@ -21,8 +21,11 @@ from libdispatch import dispatch_queue_create
 from obd_pids import (
     PID_CATALOG,
     CORE_KEYS,
+    FREEZE_PIDS,
     parse_dtc_answer,
+    parse_freeze_pid,
     parse_pid_answer,
+    parse_readiness,
 )
 
 # UUID сервисов/характеристик стандартного BLE-ELM327
@@ -506,6 +509,34 @@ class BLEOBD:
         d3 = str((second >> 4) & 0x0F)
         d4 = str(second & 0x0F)
         return letter + d1 + d2 + d3 + d4
+
+    def read_readiness(self) -> dict:
+        """Читает готовность систем (режим 01, PID 01)."""
+        answer = self.command("0101", 3)
+        for line in answer.splitlines():
+            raw = _parse_response_line(line)
+            if raw and len(raw) >= 5 and raw[0] == 0x41 and raw[1] == 0x01:
+                return parse_readiness(raw[2:])
+        return {"mil_on": False, "dtc_count": 0, "items": [], "ready": False}
+
+    def read_freeze_frame(self) -> dict:
+        """Читает стоп-кадр: параметры в момент появления ошибки (режим 02)."""
+        result = {}
+        for pid, (key, label, unit) in FREEZE_PIDS.items():
+            answer = self.command(f"02{pid}", 2)
+            expected = int(pid, 16)
+            for line in answer.splitlines():
+                raw = _parse_response_line(line)
+                if raw and len(raw) >= 4 and raw[0] == 0x42 and raw[1] == expected:
+                    value = parse_freeze_pid(raw[2:], pid)
+                    if value not in (None, ""):
+                        result[key] = {
+                            "label": label,
+                            "unit": unit,
+                            "value": value,
+                        }
+                    break
+        return result
 
     def read_all(self) -> tuple[list[str], dict]:
         codes = self.read_dtcs()

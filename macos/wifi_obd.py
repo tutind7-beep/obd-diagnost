@@ -11,7 +11,16 @@ from __future__ import annotations
 import socket
 import time
 
-from obd_pids import CORE_KEYS, PID_CATALOG, parse_dtc_answer, parse_pid_answer
+from obd_pids import (
+    CORE_KEYS,
+    FREEZE_PIDS,
+    PID_CATALOG,
+    parse_dtc_answer,
+    parse_freeze_pid,
+    parse_pid_answer,
+    parse_readiness,
+    parse_response_line,
+)
 
 # Типичные адреса Wi-Fi-адаптеров
 DEFAULT_HOSTS = ["192.168.0.10", "192.168.1.5", "192.168.4.1"]
@@ -184,6 +193,30 @@ class WiFiOBD:
             self.vin = self.read_vin()
             self.make = vin_to_make(self.vin)
         return {"vin": self.vin, "make": self.make, "protocol": self.protocol}
+
+    def read_readiness(self) -> dict:
+        """Готовность систем к техосмотру (режим 01, PID 01)."""
+        answer = self.command("0101", 3)
+        for line in answer.splitlines():
+            raw = parse_response_line(line)
+            if raw and len(raw) >= 5 and raw[0] == 0x41 and raw[1] == 0x01:
+                return parse_readiness(raw[2:])
+        return {"mil_on": False, "dtc_count": 0, "items": [], "ready": False}
+
+    def read_freeze_frame(self) -> dict:
+        """Стоп-кадр: параметры в момент появления ошибки (режим 02)."""
+        result = {}
+        for pid, (key, label, unit) in FREEZE_PIDS.items():
+            answer = self.command(f"02{pid}", 2)
+            expected = int(pid, 16)
+            for line in answer.splitlines():
+                raw = parse_response_line(line)
+                if raw and len(raw) >= 4 and raw[0] == 0x42 and raw[1] == expected:
+                    value = parse_freeze_pid(raw[2:], pid)
+                    if value not in (None, ""):
+                        result[key] = {"label": label, "unit": unit, "value": value}
+                    break
+        return result
 
     def read_all(self) -> tuple[list[str], dict]:
         return self.read_dtcs(), self.read_pids()

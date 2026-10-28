@@ -6,7 +6,7 @@ import random
 import threading
 import time
 
-from obd_pids import PID_CATALOG
+from obd_pids import PID_CATALOG, READINESS_ITEMS
 
 # Какие параметры читаем с адаптера: имя в отчёте -> команда python-OBD
 COMMANDS = [
@@ -152,6 +152,40 @@ class DemoSource:
             else:
                 values[key] = _demo_value(key)
         return values
+
+    def read_readiness(self) -> dict:
+        """Демонстрационная готовность систем."""
+        codes, _ = self.read()
+        items = [
+            {"name": name, "supported": True, "incomplete": False}
+            for name, _, _ in READINESS_ITEMS
+        ]
+        return {
+            "mil_on": bool(codes),
+            "dtc_count": len(codes),
+            "items": items,
+            "ready": not codes,
+        }
+
+    def read_freeze_frame(self) -> dict:
+        """Демонстрационный стоп-кадр по первой ошибке."""
+        codes, live = self.read()
+        if not codes:
+            return {}
+
+        result = {"dtc": {"label": "Код, вызвавший стоп-кадр", "unit": "", "value": codes[0]}}
+        mapping = {
+            "rpm": ("Обороты", "об/мин"),
+            "coolant": ("Температура ОЖ", "°C"),
+            "speed": ("Скорость", "км/ч"),
+            "throttle": ("Дроссель", "%"),
+            "maf": ("Расход воздуха", "г/с"),
+        }
+        for key, (label, unit) in mapping.items():
+            value = live.get(key)
+            if value is not None:
+                result[key] = {"label": label, "unit": unit, "value": value}
+        return result
 
     def read_params(self, keys: list[str]) -> dict:
         """Читает только указанные параметры (для графиков)."""

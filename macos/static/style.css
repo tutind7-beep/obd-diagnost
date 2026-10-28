@@ -718,3 +718,52 @@ button.danger:hover {
     margin-left: 0;
   }
 }
+
+/* Готовность, стоп-кадр, проверка адаптера */
+.readiness-result {
+  display: grid;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.readiness-summary {
+  padding: 10px 12px;
+  border-radius: 10px;
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.readiness-summary.good {
+  background: rgba(53, 194, 143, 0.12);
+  border: 1px solid #1f6b52;
+  color: var(--accent);
+}
+
+.readiness-summary.warn {
+  background: rgba(245, 165, 36, 0.12);
+  border: 1px solid #6b5525;
+  color: #ffc46b;
+}
+
+.readiness-mil {
+  margin: 2px 0 4px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.readiness-row {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-2);
+  font-size: 13px;
+}
+
+.readiness-row.ok {
+  color: #c9d6e2;
+}
+
+.readiness-row.bad {
+  border-color: #6b5525;
+  color: #ffc46b;
+}
