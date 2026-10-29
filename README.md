@@ -6,7 +6,11 @@
 
 Последняя версия (файл `.apk`):
 
-**https://github.com/tutind7-beep/obd-diagnost/releases/latest/download/obd-diagnost-v1.0.0.apk**
+**https://github.com/tutind7-beep/obd-diagnost/releases/latest/download/obd-diagnost.apk**
+
+Если телефон старый и пишет «Приложение не установлено» из-за архитектуры —
+скачайте версию для 32-битных телефонов:
+[obd-diagnost-arm32.apk](https://github.com/tutind7-beep/obd-diagnost/releases/latest/download/obd-diagnost-arm32.apk)
 
 Установка: скачайте файл на телефон, откройте его и разрешите установку из этого источника.
 Все версии — в разделе [Releases](https://github.com/tutind7-beep/obd-diagnost/releases).

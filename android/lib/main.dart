@@ -403,8 +403,20 @@ class _HomeScreenState extends State<HomeScreen> {
         return;
       }
       await _connect(device);
-    } catch (e) {
-      setState(() => _status = "Ошибка: $e");
+    } catch (error) {
+      final text = error.toString().toLowerCase();
+      String message;
+      if (text.contains("already") || text.contains("busy")) {
+        message = "Адаптер занят другим телефоном или приложением. "
+            "Закройте Car Scanner (или похожее) и отключите адаптер от другого телефона.";
+      } else if (text.contains("out of range") || text.contains("timeout")) {
+        message = "Адаптер не отвечает. Подойдите ближе, проверьте, что он "
+            "вставлен в разъём OBD-II и зажигание включено.";
+      } else {
+        message = "Не удалось подключиться: $error";
+      }
+      _log("Ошибка подключения: $error");
+      setState(() => _status = message);
     }
   }
 
@@ -2458,8 +2470,13 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
             const SizedBox(height: 10),
             if (_scanResults.isEmpty && !_scanning)
-              const Text("Нажмите кнопку, чтобы найти BLE-адаптер",
-                  style: TextStyle(color: Colors.grey)),
+              const Text(
+                "Нажмите кнопку, чтобы найти BLE-адаптер.\n"
+                "Если список пустой: включите Bluetooth и геолокацию "
+                "(на Android 11 и ниже она нужна для поиска), разрешите "
+                "приложению доступ к устройствам рядом.",
+                style: TextStyle(color: Colors.grey, fontSize: 12),
+              ),
             ..._scanResults.map((name) => ListTile(
                   leading:
                       const Icon(Icons.bluetooth, color: Color(0xFF35C28F)),
