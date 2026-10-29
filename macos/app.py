@@ -1138,13 +1138,24 @@ def main() -> None:
     if args.host == "127.0.0.1":
         print("Доступ с телефона: запусти с --host 0.0.0.0 и открой адрес компьютера в сети.")
 
-    app.run(
-        host=args.host,
-        port=args.port,
-        threaded=True,
-        debug=False,
-        ssl_context="adhoc" if args.https else None,
-    )
+    try:
+        app.run(
+            host=args.host,
+            port=args.port,
+            threaded=True,
+            debug=False,
+            ssl_context="adhoc" if args.https else None,
+        )
+    except OSError as error:
+        if "Address already in use" in str(error) or getattr(error, "errno", None) == 48:
+            print()
+            print(f"Порт {args.port} уже занят — скорее всего, приложение уже запущено.")
+            print(f"Открой в браузере: http://127.0.0.1:{args.port}/")
+            print("Если это не оно, закрой старый процесс или запусти с другим портом:")
+            print(f"  python app.py --port {args.port + 1}")
+        else:
+            print(f"Не удалось запустить сервер: {error}")
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

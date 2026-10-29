@@ -29,10 +29,18 @@ from obd_pids import (
     parse_uds_dtcs,
 )
 
-# UUID сервисов/характеристик стандартного BLE-ELM327
-SERVICE_FFF0 = "FFF0"
+# UUID сервисов/характеристик BLE-адаптеров ELM327.
+# Разные клоны используют разные наборы, поэтому поддерживаем три варианта.
+SERVICE_FFF0 = "FFF0"  # классический ELM327
 CHAR_RX = "FFF2"  # сюда пишем AT-команды
 CHAR_TX = "FFF1"  # отсюда приходят ответы
+
+SERVICE_FFE0 = "FFE0"  # HM-10 и подобные
+CHAR_FFE1 = "FFE1"  # и запись, и ответы
+
+SERVICE_NORDIC = "6E400001"  # Nordic UART
+CHAR_NORDIC_RX = "6E400002"  # запись
+CHAR_NORDIC_TX = "6E400003"  # ответы
 
 # PID-команды: ключ -> (команда, способ разбора)
 # PID-команды: ключ -> (команда, способ разбора).
@@ -290,24 +298,46 @@ class BLEOBD:
 
     # Делегат CBPeripheral
     def peripheral_didDiscoverServices_(self, peripheral, error):
+        # Запрашиваем характеристики у всех сервисов: набор зависит от клона.
         for service in peripheral.services() or []:
-            if service.UUID().UUIDString().upper() == SERVICE_FFF0:
-                peripheral.discoverCharacteristics_forService_(None, service)
+            peripheral.discoverCharacteristics_forService_(None, service)
 
     def peripheral_didDiscoverCharacteristicsForService_error_(self, peripheral, service, error):
-        if service.UUID().UUIDString().upper() != SERVICE_FFF0:
-            return
+        service_id = service.UUID().UUIDString().upper()
         for ch in service.characteristics() or []:
             uid = ch.UUID().UUIDString().upper()
-            if uid == CHAR_RX:
+            is_write = False
+            is_notify = False
+
+            if SERVICE_FFF0 in service_id:
+                is_write = uid == CHAR_RX
+                is_notify = uid == CHAR_TX
+            elif SERVICE_FFE0 in service_id:
+                is_write = is_notify = uid == CHAR_FFE1
+            elif SERVICE_NORDIC in service_id:
+                is_write = uid == CHAR_NORDIC_RX
+                is_notify = uid == CHAR_NORDIC_TX
+            else:
+                # Неизвестный сервис: смотрим на возможности характеристики.
+                props = ch.properties() or 0
+                is_write = bool(props & 0x04)  # write
+                is_notify = bool(props & 0x10)  # notify
+
+            if is_write:
                 self._rx = ch
-            elif uid == CHAR_TX:
+            if is_notify:
                 self._tx = ch
                 peripheral.setNotifyValue_forCharacteristic_(True, ch)
 
         if self._rx is not None and self._tx is not None:
             self._ready_event.set()
             self._connected_event.set()
+        elif self._rx is None or self._tx is None:
+            # Не нашли каналы — не ждём 20 секунд впустую.
+            self._last_error = (
+                "Адаптер подключён, но каналы обмена не найдены. "
+                "Похоже, это не ELM327."
+            )
 
     def peripheral_didUpdateValueForCharacteristic_error_(self, peripheral, ch, error):
         data = ch.value()

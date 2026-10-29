@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -9,6 +10,7 @@ import 'package:speech_to_text/speech_to_text.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'api_client.dart';
+import 'wifi_obd.dart';
 
 void main() {
   runApp(const ObdApp());
@@ -252,6 +254,15 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _speechReady = false;
   bool _listening = false;
 
+  // --- Тип подключения: Bluetooth LE или Wi-Fi адаптер ---
+  WifiObd? _wifi;
+  String _transport = "ble"; // "ble" или "wifi"
+  final TextEditingController _wifiHostController =
+      TextEditingController(text: "192.168.0.10");
+  final TextEditingController _modelController = TextEditingController();
+  final TextEditingController _yearController = TextEditingController();
+  String _dataWarning = ""; // предупреждение, если ЭБУ не отдаёт данные
+
   // --- Журнал работы (для поиска причин сбоев) ---
   final List<String> _logs = [];
   static const int _logLimit = 500;
@@ -285,6 +296,10 @@ class _HomeScreenState extends State<HomeScreen> {
   void dispose() {
     _pollTimer?.cancel();
     _device?.disconnect();
+    _wifi?.disconnect();
+    _wifiHostController.dispose();
+    _modelController.dispose();
+    _yearController.dispose();
     super.dispose();
   }
 
@@ -298,11 +313,41 @@ class _HomeScreenState extends State<HomeScreen> {
       _status = "Ищу адаптер…";
     });
 
+    if (!await FlutterBluePlus.isSupported) {
+      setState(() {
+        _status = "Этот телефон не поддерживает Bluetooth LE. "
+            "Используйте Wi-Fi адаптер (переключите тип подключения).";
+        _scanning = false;
+      });
+      return;
+    }
+
+    final adapterState = await FlutterBluePlus.adapterState.first;
+    if (adapterState != BluetoothAdapterState.on) {
+      setState(() {
+        _status = adapterState == BluetoothAdapterState.off
+            ? "Bluetooth выключен. Включите его в шторке телефона и повторите поиск."
+            : "Bluetooth сейчас недоступен ($adapterState). "
+                "Проверьте настройки или перезагрузите телефон.";
+        _scanning = false;
+      });
+      return;
+    }
+
     try {
       await FlutterBluePlus.startScan(timeout: const Duration(seconds: 12));
-    } catch (e) {
+    } on PlatformException catch (error) {
+      final message = (error.message ?? "").toLowerCase();
       setState(() {
-        _status = "Ошибка сканирования: $e";
+        _status = message.contains("permission")
+            ? "Нет разрешения на Bluetooth. Разрешите доступ в настройках приложения."
+            : "Bluetooth не смог начать поиск: ${error.message ?? error.code}";
+        _scanning = false;
+      });
+      return;
+    } catch (error) {
+      setState(() {
+        _status = "Ошибка поиска адаптера: $error";
         _scanning = false;
       });
       return;
@@ -384,34 +429,122 @@ class _HomeScreenState extends State<HomeScreen> {
     });
 
     final services = await device.discoverServices();
+    await _pickChannels(services);
+
+    if (_rx == null || _tx == null) {
+      _log("Ошибка: не найдены каналы обмена");
+      setState(() => _status = "Адаптер не похож на ELM327: не найдены каналы "
+          "обмена. Попробуйте другой адаптер или подключение по Wi-Fi.");
+      return;
+    }
+    _log("Каналы: ${_tx!.uuid} (ответы), ${_rx!.uuid} (команды)");
+
+    _transport = "ble";
+    await _tx!.setNotifyValue(true);
+    _tx!.lastValueStream.listen(_onData);
+
+    final ready = await _initialize();
+    if (!ready) {
+      return;
+    }
+    setState(() => _status = "Подключено");
+    _startPolling();
+  }
+
+  /// Ищет каналы обмена: разные клоны ELM327 используют разные сервисы.
+  Future<void> _pickChannels(List<BluetoothService> services) async {
+    BluetoothCharacteristic? fallbackNotify;
+    BluetoothCharacteristic? fallbackWrite;
+
     for (final service in services) {
-      if (service.uuid.toString().toUpperCase().contains("FFF0")) {
-        for (final ch in service.characteristics) {
-          final uuid = ch.uuid.toString().toUpperCase();
-          if (uuid.contains("FFF1")) {
-            _tx = ch;
-            await ch.setNotifyValue(true);
-          } else if (uuid.contains("FFF2")) {
-            _rx = ch;
-          }
+      final serviceId = service.uuid.toString().toUpperCase();
+      for (final characteristic in service.characteristics) {
+        final id = characteristic.uuid.toString().toUpperCase();
+
+        // Классический ELM327: FFF0, ответы в FFF1, команды в FFF2
+        if (serviceId.contains("FFF0")) {
+          if (id.contains("FFF1")) _tx = characteristic;
+          if (id.contains("FFF2")) _rx = characteristic;
+        }
+
+        // HM-10 и подобные: FFE0, всё через FFE1
+        if (serviceId.contains("FFE0") && id.contains("FFE1")) {
+          _tx = characteristic;
+          _rx = characteristic;
+        }
+
+        // Nordic UART: 6E400001, запись в 6E400002, ответы из 6E400003
+        if (serviceId.contains("6E400001")) {
+          if (id.contains("6E400002")) _rx = characteristic;
+          if (id.contains("6E400003")) _tx = characteristic;
+        }
+
+        // Запасной вариант: берём любые подходящие характеристики
+        if (fallbackNotify == null && characteristic.properties.notify) {
+          fallbackNotify = characteristic;
+        }
+        if (fallbackWrite == null &&
+            (characteristic.properties.write ||
+                characteristic.properties.writeWithoutResponse)) {
+          fallbackWrite = characteristic;
         }
       }
     }
 
-    if (_rx == null || _tx == null) {
-      _log("Ошибка: не найдены характеристики FFF1/FFF2");
-      setState(() => _status = "Не найдены характеристики ELM327");
+    _tx ??= fallbackNotify;
+    _rx ??= fallbackWrite;
+  }
+
+  /// Подключение к Wi-Fi адаптеру (ELM327 по TCP).
+  Future<void> _connectWifi() async {
+    final host = _wifiHostController.text.trim();
+    if (host.isEmpty) {
+      setState(() => _status = "Введите IP-адрес адаптера, например 192.168.0.10");
       return;
     }
-    _log("Каналы найдены: FFF1 уведомления, FFF2 запись");
 
-    _tx!.lastValueStream.listen((value) {
-      _onData(value);
+    setState(() {
+      _status = "Подключаюсь к $host…";
+      _scanning = false;
     });
 
-    await _initialize();
-    setState(() => _status = "Подключено");
-    _startPolling();
+    try {
+      await _wifi?.disconnect();
+      final wifi = WifiObd(onDisconnected: () {
+        if (!mounted) {
+          return;
+        }
+        setState(() {
+          _connected = false;
+          _status = "Связь с Wi-Fi адаптером потеряна";
+        });
+      });
+
+      await wifi.connect(host);
+      _wifi = wifi;
+      _transport = "wifi";
+      _adapterName = "Wi-Fi $host";
+
+      setState(() {
+        _connected = true;
+        _status = "Подключено. Инициализирую…";
+      });
+
+      final ready = await _initialize();
+      if (!ready) {
+        return;
+      }
+      setState(() => _status = "Подключено");
+      _startPolling();
+    } on SocketException catch (error) {
+      _log("Wi-Fi: $error");
+      setState(() => _status = "Не удалось подключиться к $host. "
+          "Проверьте, что телефон подключён к Wi-Fi сети адаптера "
+          "(обычно WiFi_OBDII) и адрес верный.");
+    } catch (error) {
+      _log("Wi-Fi: $error");
+      setState(() => _status = "Ошибка подключения по Wi-Fi: $error");
+    }
   }
 
   // ----------------------------------------------------------
@@ -443,6 +576,17 @@ class _HomeScreenState extends State<HomeScreen> {
   // ----------------------------------------------------------
   Future<String> _command(String cmd,
       {Duration timeout = const Duration(seconds: 3)}) async {
+    if (_transport == "wifi") {
+      final wifi = _wifi;
+      if (wifi == null || !wifi.isConnected) {
+        _log("→ $cmd: нет соединения с Wi-Fi адаптером");
+        return "";
+      }
+      final answer = await wifi.command(cmd, timeout: timeout);
+      _log("→ $cmd  ← ${_shorten(answer)}");
+      return answer;
+    }
+
     if (_rx == null) {
       _log("→ $cmd: канал записи не найден");
       return "";
@@ -477,7 +621,8 @@ class _HomeScreenState extends State<HomeScreen> {
     return "${oneLine.substring(0, limit)}…";
   }
 
-  Future<void> _initialize() async {
+  /// Готовит адаптер к работе. Возвращает false, если ЭБУ не отвечает.
+  Future<bool> _initialize() async {
     // Без ATZ: сброс рвёт BLE-соединение у многих адаптеров
     await _command("ATE0");
     await _command("ATL0");
@@ -488,6 +633,7 @@ class _HomeScreenState extends State<HomeScreen> {
     await _command("ATSP0");
     await Future.delayed(const Duration(milliseconds: 250));
 
+    var protocolFound = false;
     for (final protocol in _protocols) {
       await _command("ATSP${protocol[0]}");
       await Future.delayed(const Duration(milliseconds: 250));
@@ -495,13 +641,29 @@ class _HomeScreenState extends State<HomeScreen> {
           await _command("0100", timeout: const Duration(seconds: 4));
       if (answer.contains("41")) {
         _log("Протокол: ${protocol[1]}");
-        setState(() => _protocolName = protocol[1]);
+        setState(() {
+          _protocolName = protocol[1];
+          _dataWarning = "";
+        });
+        protocolFound = true;
         break;
       }
     }
 
+    if (!protocolFound) {
+      _log("Протокол не определён: машина не отвечает");
+      setState(() {
+        _protocolName = "";
+        _status = "Адаптер подключён, но машина не отвечает. "
+            "Проверьте: зажигание включено? Адаптер вставлен в разъём OBD-II "
+            "до щелчка? Машина поддерживает OBD-II (после 2001 года)?";
+      });
+      return false;
+    }
+
     // Определяем марку по VIN из ЭБУ
     await _readVehicleInfo();
+    return true;
   }
 
   Future<void> _readVehicleInfo() async {
@@ -669,8 +831,13 @@ class _HomeScreenState extends State<HomeScreen> {
       }
     }
 
+    final hasData = live.values.any((value) => value != null);
     if (mounted) {
       setState(() {
+        _dataWarning = hasData
+            ? ""
+            : "Машина не отдаёт параметры. Проверьте, что зажигание включено "
+                "и двигатель заведён.";
         _live = live;
         // Добавляем значения в историю графиков
         chartValues.forEach((key, value) {
@@ -910,6 +1077,8 @@ class _HomeScreenState extends State<HomeScreen> {
         codes: _dtcCodes,
         live: _live,
         make: _detectedMake,
+        model: _modelController.text.trim(),
+        year: _yearController.text.trim(),
       );
 
       setState(() {
@@ -1192,8 +1361,22 @@ class _HomeScreenState extends State<HomeScreen> {
       _symptomStatus = "Слушаю…";
     });
 
+    // Если русского распознавания нет, слушаем на языке системы
+    final locales = await _speech.locales();
+    final hasRussian = locales
+        .any((locale) => locale.localeId.toLowerCase().startsWith("ru"));
+    String? localeId = "ru_RU";
+    if (!hasRussian) {
+      final systemLocale = await _speech.systemLocale();
+      localeId = systemLocale?.localeId;
+      _log("Русское распознавание недоступно, используем язык системы");
+      setState(() => _symptomStatus =
+          "Русское распознавание не установлено — попробуйте говорить проще "
+          "или введите жалобу текстом.");
+    }
+
     await _speech.listen(
-      listenOptions: SpeechListenOptions(localeId: "ru_RU"),
+      listenOptions: SpeechListenOptions(localeId: localeId),
       onResult: (result) {
         final text = result.recognizedWords;
         setState(() {
@@ -1218,6 +1401,42 @@ class _HomeScreenState extends State<HomeScreen> {
         }
       }
     });
+  }
+
+  /// Собирает короткий отчёт о диагностике в текст и копирует в буфер.
+  Future<void> _copyReport() async {
+    final lines = <String>[
+      "OBD-Диагност — отчёт",
+      "Дата: ${DateTime.now().toString().substring(0, 16)}",
+      "Адаптер: $_adapterName",
+      if (_protocolName.isNotEmpty) "Протокол: $_protocolName",
+      if (_vin.isNotEmpty) "VIN: $_vin",
+      if (_detectedMake.isNotEmpty) "Марка: $_detectedMake",
+      if (_modelController.text.trim().isNotEmpty)
+        "Модель: ${_modelController.text.trim()}",
+      if (_yearController.text.trim().isNotEmpty)
+        "Год: ${_yearController.text.trim()}",
+      "Коды ошибок: ${_dtcCodes.isEmpty ? "нет" : _dtcCodes.join(", ")}",
+      "Параметры:",
+    ];
+
+    _live.forEach((key, value) {
+      final label = tileLabels[key] ?? key;
+      final unit = tileUnits[key] ?? "";
+      lines.add(
+          "  $label: ${value == null ? "нет данных" : value.toStringAsFixed(1)} $unit");
+    });
+
+    for (final module in _modules) {
+      final codes = (module["codes"] as List).cast<String>();
+      lines.add(
+          "Блок ${module["name"]}: ${codes.isEmpty ? "ошибок нет" : codes.join(", ")}");
+    }
+
+    await Clipboard.setData(ClipboardData(text: lines.join("\n")));
+    setState(() =>
+        _adviceStatus = "Отчёт скопирован — можно вставить в сообщение.");
+    _log("Отчёт скопирован в буфер обмена");
   }
 
   Future<void> _askSymptoms() async {
@@ -1473,6 +1692,13 @@ class _HomeScreenState extends State<HomeScreen> {
             Text("Протокол: $_protocolName",
                 style: const TextStyle(color: Colors.grey)),
           Text(_status, style: const TextStyle(color: Colors.grey)),
+          if (_dataWarning.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Text(_dataWarning,
+                  style: const TextStyle(
+                      color: Colors.orangeAccent, fontSize: 12)),
+            ),
           if (_debug.isNotEmpty)
             Padding(
               padding: const EdgeInsets.only(top: 6),
@@ -2082,6 +2308,36 @@ class _HomeScreenState extends State<HomeScreen> {
             style: const TextStyle(fontSize: 12, color: Colors.grey),
           ),
           const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _modelController,
+                  decoration: const InputDecoration(
+                    labelText: "Модель (необязательно)",
+                    hintText: "X-Trail",
+                    border: OutlineInputBorder(),
+                    isDense: true,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 10),
+              SizedBox(
+                width: 110,
+                child: TextField(
+                  controller: _yearController,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(
+                    labelText: "Год",
+                    hintText: "2013",
+                    border: OutlineInputBorder(),
+                    isDense: true,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
           Wrap(
             spacing: 10,
             runSpacing: 10,
@@ -2099,6 +2355,10 @@ class _HomeScreenState extends State<HomeScreen> {
                 OutlinedButton(
                   onPressed: _openHistory,
                   child: const Text("История"),
+                ),
+                OutlinedButton(
+                  onPressed: _copyReport,
+                  child: const Text("Скопировать отчёт"),
                 ),
                 TextButton(
                   onPressed: _logout,
@@ -2166,20 +2426,67 @@ class _HomeScreenState extends State<HomeScreen> {
           const Text("Подключение к адаптеру",
               style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
           const SizedBox(height: 10),
-          ElevatedButton(
-            onPressed: _scanning ? null : _startScan,
-            child: Text(_scanning ? "Поиск…" : "Найти адаптер"),
+          SegmentedButton<String>(
+            segments: const [
+              ButtonSegment<String>(
+                value: "ble",
+                label: Text("Bluetooth"),
+                icon: Icon(Icons.bluetooth),
+              ),
+              ButtonSegment<String>(
+                value: "wifi",
+                label: Text("Wi-Fi"),
+                icon: Icon(Icons.wifi),
+              ),
+            ],
+            selected: {_transport},
+            onSelectionChanged: (selection) {
+              setState(() {
+                _transport = selection.first;
+                _scanResults = [];
+                _status = _transport == "wifi"
+                    ? "Подключите телефон к Wi-Fi сети адаптера и нажмите «Подключиться»"
+                    : "Нажмите «Найти адаптер»";
+              });
+            },
           ),
           const SizedBox(height: 10),
-          if (_scanResults.isEmpty && !_scanning)
-            const Text("Нажмите кнопку, чтобы найти BLE-адаптер",
-                style: TextStyle(color: Colors.grey)),
-          ..._scanResults.map((name) => ListTile(
-                leading:
-                    const Icon(Icons.bluetooth, color: Color(0xFF35C28F)),
-                title: Text(name),
-                onTap: () => _connectByName(name),
-              )),
+          if (_transport == "ble") ...[
+            ElevatedButton(
+              onPressed: _scanning ? null : _startScan,
+              child: Text(_scanning ? "Поиск…" : "Найти адаптер"),
+            ),
+            const SizedBox(height: 10),
+            if (_scanResults.isEmpty && !_scanning)
+              const Text("Нажмите кнопку, чтобы найти BLE-адаптер",
+                  style: TextStyle(color: Colors.grey)),
+            ..._scanResults.map((name) => ListTile(
+                  leading:
+                      const Icon(Icons.bluetooth, color: Color(0xFF35C28F)),
+                  title: Text(name),
+                  onTap: () => _connectByName(name),
+                )),
+          ] else ...[
+            const Text(
+              "Адаптер Wi-Fi создаёт свою сеть (обычно WiFi_OBDII). "
+              "Подключите телефон к ней, адрес оставьте как есть.",
+              style: TextStyle(fontSize: 12, color: Colors.grey),
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              controller: _wifiHostController,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(
+                labelText: "IP-адрес адаптера",
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 10),
+            ElevatedButton(
+              onPressed: _connectWifi,
+              child: const Text("Подключиться по Wi-Fi"),
+            ),
+          ],
         ],
       ),
     );
