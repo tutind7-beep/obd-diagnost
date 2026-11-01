@@ -4,12 +4,14 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 
 import 'package:speech_to_text/speech_to_text.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'api_client.dart';
+import 'theme.dart';
 import 'wifi_obd.dart';
 
 void main() {
@@ -182,27 +184,56 @@ const Map<String, String> _vinMakes = {
   "LGW": "Haval", "LVS": "Changan",
 };
 
-class ObdApp extends StatelessWidget {
+class ObdApp extends StatefulWidget {
   const ObdApp({super.key});
+
+  @override
+  State<ObdApp> createState() => _ObdAppState();
+}
+
+class _ObdAppState extends State<ObdApp> {
+  bool _dark = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadTheme();
+  }
+
+  /// Вспоминает выбранную тему: она сохраняется на телефоне.
+  Future<void> _loadTheme() async {
+    final prefs = await SharedPreferences.getInstance();
+    final dark = prefs.getBool("dark-theme") ?? false;
+    AppColors.isDark = dark;
+    if (mounted) {
+      setState(() => _dark = dark);
+    }
+  }
+
+  Future<void> _toggleTheme() async {
+    final dark = !_dark;
+    AppColors.isDark = dark;
+    setState(() => _dark = dark);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool("dark-theme", dark);
+  }
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
       title: "OBD-Диагност",
-      theme: ThemeData.dark(useMaterial3: true).copyWith(
-        scaffoldBackgroundColor: const Color(0xFF0E141A),
-        colorScheme: const ColorScheme.dark(
-          primary: Color(0xFF35C28F),
-          surface: Color(0xFF172029),
-        ),
-      ),
-      home: const HomeScreen(),
+      debugShowCheckedModeBanner: false,
+      theme: buildAppTheme(),
+      home: HomeScreen(onToggleTheme: _toggleTheme, isDark: _dark),
     );
   }
 }
 
 class HomeScreen extends StatefulWidget {
-  const HomeScreen({super.key});
+  const HomeScreen({super.key, required this.onToggleTheme, required this.isDark});
+
+  final VoidCallback onToggleTheme;
+  final bool isDark;
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
@@ -505,6 +536,34 @@ class _HomeScreenState extends State<HomeScreen> {
 
     _tx ??= fallbackNotify;
     _rx ??= fallbackWrite;
+  }
+
+  /// Демонстрационные данные: позволяют посмотреть приложение без машины.
+  void _startDemo() {
+    _log("Включён демо-режим");
+    setState(() {
+      _connected = true;
+      _adapterName = "Демо-адаптер";
+      _protocolName = "Демо (не с машины)";
+      _detectedMake = "Nissan";
+      _vin = "Z8NXXXXXXXXXXXXXX";
+      _status = "Демо-режим: данные вымышленные";
+      _dataWarning = "";
+      _live = {
+        "rpm": 742,
+        "coolant": 91,
+        "speed": 0,
+        "voltage": 13.8,
+        "fuel_trim_short": 1.2,
+        "fuel_trim_long": 0.8,
+        "throttle": 14.1,
+        "maf": 3.2,
+        "intake_temp": 25,
+      };
+      _dtcCodes = ["P0171"];
+      _chartKeys = ["rpm"];
+      _chartData["rpm"] = [];
+    });
   }
 
   /// Подключение к Wi-Fi адаптеру (ELM327 по TCP).
@@ -1011,39 +1070,39 @@ class _HomeScreenState extends State<HomeScreen> {
             }
 
             return AlertDialog(
-              backgroundColor: const Color(0xFF172029),
-              title: const Text("Аккаунт"),
+              backgroundColor: AppColors.surface,
+              title: Text("Аккаунт"),
               content: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   TextField(
                     controller: emailController,
                     keyboardType: TextInputType.emailAddress,
-                    decoration: const InputDecoration(labelText: "Email"),
+                    decoration: InputDecoration(labelText: "Email"),
                   ),
                   const SizedBox(height: 10),
                   TextField(
                     controller: passwordController,
                     obscureText: true,
-                    decoration: const InputDecoration(
+                    decoration: InputDecoration(
                       labelText: "Пароль (от 6 символов)",
                     ),
                   ),
                   const SizedBox(height: 12),
                   if (dialogStatus.isNotEmpty)
                     Text(dialogStatus,
-                        style: const TextStyle(
-                            fontSize: 12, color: Colors.orangeAccent)),
+                        style: TextStyle(
+                            fontSize: 12, color: AppColors.warning)),
                 ],
               ),
               actions: [
                 TextButton(
                   onPressed: busy ? null : () => submit(false),
-                  child: const Text("Войти"),
+                  child: Text("Войти"),
                 ),
                 TextButton(
                   onPressed: busy ? null : () => submit(true),
-                  child: const Text("Зарегистрироваться"),
+                  child: Text("Зарегистрироваться"),
                 ),
               ],
             );
@@ -1142,22 +1201,22 @@ class _HomeScreenState extends State<HomeScreen> {
       MaterialPageRoute(
         builder: (context) => Scaffold(
           appBar: AppBar(
-            title: const Text("История диагностик"),
-            backgroundColor: const Color(0xFF172029),
+            title: Text("История диагностик"),
+            backgroundColor: AppColors.surface,
           ),
-          backgroundColor: const Color(0xFF0E141A),
+          backgroundColor: AppColors.background,
           body: error.isNotEmpty
               ? Center(
                   child: Padding(
                     padding: const EdgeInsets.all(20),
                     child: Text("Не удалось загрузить историю: $error",
-                        style: const TextStyle(color: Colors.grey)),
+                        style: TextStyle(color: AppColors.muted)),
                   ),
                 )
               : items.isEmpty
-                  ? const Center(
+                  ? Center(
                       child: Text("Записей пока нет",
-                          style: TextStyle(color: Colors.grey)),
+                          style: TextStyle(color: AppColors.muted)),
                     )
                   : ListView.separated(
                       padding: const EdgeInsets.all(16),
@@ -1169,39 +1228,39 @@ class _HomeScreenState extends State<HomeScreen> {
                         return Container(
                           padding: const EdgeInsets.all(14),
                           decoration: BoxDecoration(
-                            color: const Color(0xFF172029),
+                            color: AppColors.surface,
                             borderRadius: BorderRadius.circular(12),
-                            border: Border.all(color: const Color(0xFF26333F)),
+                            border: Border.all(color: AppColors.border),
                           ),
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Text(
                                 (item["created_at"] ?? "").toString(),
-                                style: const TextStyle(
-                                    fontSize: 11, color: Colors.grey),
+                                style: TextStyle(
+                                    fontSize: 11, color: AppColors.muted),
                               ),
                               if (codes.isNotEmpty)
                                 Padding(
                                   padding: const EdgeInsets.only(top: 4),
                                   child: Text("Коды: $codes",
-                                      style: const TextStyle(
-                                          color: Color(0xFFFF9A9C),
+                                      style: TextStyle(
+                                          color: AppColors.dangerText,
                                           fontWeight: FontWeight.bold)),
                                 ),
                               const SizedBox(height: 6),
                               Text(
                                 (item["advice"] ?? "").toString(),
-                                style: const TextStyle(fontSize: 13),
+                                style: TextStyle(fontSize: 13),
                               ),
                               if ((item["part"] ?? "").toString().isNotEmpty)
                                 Padding(
                                   padding: const EdgeInsets.only(top: 6),
                                   child: Text(
                                     "Запчасть: ${item["part"]}",
-                                    style: const TextStyle(
+                                    style: TextStyle(
                                         fontSize: 12,
-                                        color: Color(0xFF35C28F)),
+                                        color: AppColors.accent),
                                   ),
                                 ),
                             ],
@@ -1538,7 +1597,7 @@ class _HomeScreenState extends State<HomeScreen> {
         return StatefulBuilder(
           builder: (context, setDialogState) {
             return Dialog(
-              backgroundColor: const Color(0xFF172029),
+              backgroundColor: AppColors.surface,
               insetPadding: const EdgeInsets.all(16),
               child: Padding(
                 padding: const EdgeInsets.all(16),
@@ -1563,11 +1622,11 @@ class _HomeScreenState extends State<HomeScreen> {
                                   content: Text("Журнал скопирован")),
                             );
                           },
-                          child: const Text("Копировать"),
+                          child: Text("Копировать"),
                         ),
                         TextButton(
                           onPressed: () => setDialogState(_logs.clear),
-                          child: const Text("Очистить"),
+                          child: Text("Очистить"),
                         ),
                       ],
                     ),
@@ -1578,19 +1637,19 @@ class _HomeScreenState extends State<HomeScreen> {
                       child: Container(
                         padding: const EdgeInsets.all(10),
                         decoration: BoxDecoration(
-                          color: const Color(0xFF0E141A),
+                          color: AppColors.background,
                           borderRadius: BorderRadius.circular(10),
-                          border: Border.all(color: const Color(0xFF26333F)),
+                          border: Border.all(color: AppColors.border),
                         ),
                         child: _logs.isEmpty
-                            ? const Text("Журнал пуст",
+                            ? Text("Журнал пуст",
                                 style: TextStyle(
-                                    fontSize: 12, color: Colors.grey))
+                                    fontSize: 12, color: AppColors.muted))
                             : SingleChildScrollView(
                                 reverse: true,
                                 child: SelectableText(
                                   _logs.join("\n"),
-                                  style: const TextStyle(
+                                  style: TextStyle(
                                       fontSize: 11,
                                       height: 1.4,
                                       fontFamily: "monospace"),
@@ -1603,7 +1662,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       alignment: Alignment.centerRight,
                       child: TextButton(
                         onPressed: () => Navigator.pop(dialogContext),
-                        child: const Text("Закрыть"),
+                        child: Text("Закрыть"),
                       ),
                     ),
                   ],
@@ -1623,17 +1682,20 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text("OBD-Диагност"),
-        backgroundColor: const Color(0xFF172029),
-        foregroundColor: Colors.white,
+        title: Text("OBD · Диагност"),
         actions: [
           IconButton(
-            icon: const Icon(Icons.receipt_long),
+            icon: Icon(widget.isDark ? Icons.light_mode : Icons.dark_mode),
+            tooltip: widget.isDark ? "Светлая тема" : "Тёмная тема",
+            onPressed: widget.onToggleTheme,
+          ),
+          IconButton(
+            icon: Icon(Icons.receipt_long),
             tooltip: "Журнал работы",
             onPressed: _openLogs,
           ),
           IconButton(
-            icon: const Icon(Icons.refresh),
+            icon: Icon(Icons.refresh),
             onPressed: _connected ? _readPids : _startScan,
           ),
         ],
@@ -1645,7 +1707,7 @@ class _HomeScreenState extends State<HomeScreen> {
           children: [
             _statusCard(),
             const SizedBox(height: 16),
-            _liveTiles(),
+            _heroCard(),
             const SizedBox(height: 16),
             _dtcSection(),
             const SizedBox(height: 16),
@@ -1665,14 +1727,14 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _statusCard() {
-    final color = _connected ? const Color(0xFF35C28F) : Colors.orangeAccent;
+    final color = _connected ? AppColors.accent : AppColors.warning;
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: const Color(0xFF172029),
+        color: AppColors.surface,
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: const Color(0xFF26333F)),
+        border: Border.all(color: AppColors.border),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1687,85 +1749,118 @@ class _HomeScreenState extends State<HomeScreen> {
               const SizedBox(width: 8),
               Text(
                 _connected ? "Подключено" : "Не подключено",
-                style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
               ),
             ],
           ),
           const SizedBox(height: 6),
           Text("Адаптер: $_adapterName",
-              style: const TextStyle(color: Colors.grey)),
+              style: TextStyle(color: AppColors.muted)),
           if (_detectedMake.isNotEmpty)
             Text("Автомобиль: $_detectedMake",
-                style: const TextStyle(
-                    color: Color(0xFF35C28F), fontWeight: FontWeight.w600)),
+                style: TextStyle(
+                    color: AppColors.accent, fontWeight: FontWeight.w600)),
           if (_vin.isNotEmpty)
-            Text("VIN: $_vin", style: const TextStyle(color: Colors.grey)),
+            Text("VIN: $_vin", style: TextStyle(color: AppColors.muted)),
           if (_protocolName.isNotEmpty)
             Text("Протокол: $_protocolName",
-                style: const TextStyle(color: Colors.grey)),
-          Text(_status, style: const TextStyle(color: Colors.grey)),
+                style: TextStyle(color: AppColors.muted)),
+          if (_status.isNotEmpty &&
+              _status != (_connected ? "Подключено" : "Не подключено"))
+            Text(_status, style: TextStyle(color: AppColors.muted)),
           if (_dataWarning.isNotEmpty)
             Padding(
               padding: const EdgeInsets.only(top: 6),
               child: Text(_dataWarning,
-                  style: const TextStyle(
-                      color: Colors.orangeAccent, fontSize: 12)),
+                  style: TextStyle(
+                      color: AppColors.warning, fontSize: 12)),
             ),
           if (_debug.isNotEmpty)
             Padding(
               padding: const EdgeInsets.only(top: 6),
               child: Text(_debug,
-                  style: const TextStyle(
-                      color: Colors.orangeAccent, fontSize: 11)),
+                  style: TextStyle(
+                      color: AppColors.warning, fontSize: 11)),
             ),
           if (_cmdDebug.isNotEmpty)
             Padding(
               padding: const EdgeInsets.only(top: 4),
               child: Text(_cmdDebug,
-                  style: const TextStyle(
-                      color: Colors.yellowAccent, fontSize: 11)),
+                  style: TextStyle(
+                      color: AppColors.warning, fontSize: 11)),
             ),
         ],
       ),
     );
   }
 
-  Widget _liveTiles() {
-    final entries = pidCommands.keys.toList();
-    return Wrap(
-      spacing: 10,
-      runSpacing: 10,
-      children: entries.map((key) {
-        final value = _live[key];
-        return Container(
-          width: 150,
-          padding: const EdgeInsets.all(12),
-          decoration: BoxDecoration(
-            color: const Color(0xFF1F2A35),
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: const Color(0xFF26333F)),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+  Widget _heroCard() {
+    final rpm = _live["rpm"];
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(20, 20, 20, 6),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text("ОБОРОТЫ", style: AppText.label),
+          const SizedBox(height: 8),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
             children: [
-              Text(tileLabels[key]!,
-                  style: const TextStyle(fontSize: 12, color: Colors.grey)),
-              const SizedBox(height: 4),
               Text(
-                value == null ? "—" : _format(value),
-                style:
-                    const TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
+                rpm == null ? "—" : _format(rpm),
+                style: rpm == null
+                    ? AppText.hero.copyWith(color: AppColors.muted, fontSize: 56)
+                    : AppText.hero,
               ),
-              Text(tileUnits[key]!,
-                  style: const TextStyle(fontSize: 11, color: Colors.grey)),
+              const SizedBox(width: 8),
+              Padding(
+                padding: const EdgeInsets.only(bottom: 10),
+                child: Text("об/мин", style: AppText.note),
+              ),
             ],
           ),
-        );
-      }).toList(),
+          const SizedBox(height: 20),
+          ..._liveRows(),
+        ],
+      ),
     );
   }
 
-  String _format(double value) {
+  /// Строки остальных параметров: подпись слева, значение справа.
+  List<Widget> _liveRows() {
+    final keys = pidCommands.keys.toList()..remove("rpm");
+    return keys.map((key) {
+      final value = _live[key];
+      return Container(
+        padding: const EdgeInsets.symmetric(vertical: 13),
+        decoration: BoxDecoration(
+          border: Border(bottom: BorderSide(color: AppColors.border)),
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text(tileLabels[key]!,
+                style: AppText.body.copyWith(fontWeight: FontWeight.w400)),
+            Row(
+              children: [
+                Text(value == null ? "—" : _format(value), style: AppText.value),
+                const SizedBox(width: 4),
+                Text(tileUnits[key]!, style: AppText.note),
+              ],
+            ),
+          ],
+        ),
+      );
+    }).toList();
+  }
+
+    String _format(double value) {
     if (value == value.roundToDouble()) {
       return value.round().toString();
     }
@@ -1777,36 +1872,35 @@ class _HomeScreenState extends State<HomeScreen> {
       width: double.infinity,
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: const Color(0xFF172029),
+        color: AppColors.surface,
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: const Color(0xFF26333F)),
+        border: Border.all(color: AppColors.border),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text("Ошибки",
-              style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
+          Text("ОШИБКИ", style: AppText.title),
           const SizedBox(height: 10),
           Row(
             children: [
               ElevatedButton(
                 onPressed: _connected ? _readDtc : null,
-                child: const Text("Чтение ошибок"),
+                child: Text("Чтение ошибок"),
               ),
               const SizedBox(width: 10),
               ElevatedButton(
                 onPressed: _connected ? _confirmClear : null,
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0x33E5484D),
-                  foregroundColor: const Color(0xFFFF9A9C),
+                  backgroundColor: AppColors.dangerBackground,
+                  foregroundColor: AppColors.dangerText,
                 ),
-                child: const Text("Стереть"),
+                child: Text("Стереть"),
               ),
             ],
           ),
           const SizedBox(height: 10),
           if (_dtcCodes.isEmpty)
-            const Text("Ошибок не найдено", style: TextStyle(color: Colors.grey))
+            Text("Ошибок не найдено", style: TextStyle(color: AppColors.muted))
           else
             Wrap(
               spacing: 8,
@@ -1816,12 +1910,12 @@ class _HomeScreenState extends State<HomeScreen> {
                         padding: const EdgeInsets.symmetric(
                             horizontal: 12, vertical: 6),
                         decoration: BoxDecoration(
-                          color: const Color(0x29E5484D),
+                          color: AppColors.dangerBackground,
                           borderRadius: BorderRadius.circular(999),
                         ),
                         child: Text(code,
-                            style: const TextStyle(
-                                color: Color(0xFFFF9A9C),
+                            style: TextStyle(
+                                color: AppColors.dangerText,
                                 fontWeight: FontWeight.bold)),
                       ))
                   .toList(),
@@ -1836,19 +1930,19 @@ class _HomeScreenState extends State<HomeScreen> {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
-        title: const Text("Стереть ошибки?"),
-        content: const Text(
+        title: Text("Стереть ошибки?"),
+        content: Text(
           "Погаснет лампа Check Engine. Если неисправность не устранена, "
           "ошибка появится снова. Также сбросится готовность к техосмотру.",
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(dialogContext, false),
-            child: const Text("Отмена"),
+            child: Text("Отмена"),
           ),
           TextButton(
             onPressed: () => Navigator.pop(dialogContext, true),
-            child: const Text("Стереть"),
+            child: Text("Стереть"),
           ),
         ],
       ),
@@ -1865,18 +1959,17 @@ class _HomeScreenState extends State<HomeScreen> {
       width: double.infinity,
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: const Color(0xFF172029),
+        color: AppColors.surface,
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: const Color(0xFF26333F)),
+        border: Border.all(color: AppColors.border),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text("Графики",
-              style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
+          Text("ГРАФИКИ", style: AppText.title),
           const SizedBox(height: 6),
-          const Text("Выберите параметр — график появится и будет обновляться.",
-              style: TextStyle(fontSize: 12, color: Colors.grey)),
+          Text("Выберите параметр — график появится и будет обновляться.",
+              style: TextStyle(fontSize: 12, color: AppColors.muted)),
           const SizedBox(height: 10),
           Row(
             children: [
@@ -1884,7 +1977,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 child: DropdownButton<String>(
                   isExpanded: true,
                   value: _chartChoice,
-                  dropdownColor: const Color(0xFF1F2A35),
+                  dropdownColor: AppColors.nested,
                   items: _allParams
                       .map((param) => DropdownMenuItem(
                             value: param[0],
@@ -1902,14 +1995,14 @@ class _HomeScreenState extends State<HomeScreen> {
               const SizedBox(width: 10),
               ElevatedButton(
                 onPressed: _addChart,
-                child: const Text("Добавить"),
+                child: Text("Добавить"),
               ),
             ],
           ),
           const SizedBox(height: 12),
           if (_chartKeys.isEmpty)
-            const Text("Графики не выбраны.",
-                style: TextStyle(color: Colors.grey))
+            Text("Графики не выбраны.",
+                style: TextStyle(color: AppColors.muted))
           else
             ..._chartKeys.map((key) => _chartCard(key)),
         ],
@@ -1937,9 +2030,9 @@ class _HomeScreenState extends State<HomeScreen> {
       margin: const EdgeInsets.only(bottom: 12),
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: const Color(0xFF1F2A35),
+        color: AppColors.nested,
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: const Color(0xFF26333F)),
+        border: Border.all(color: AppColors.border),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1948,19 +2041,19 @@ class _HomeScreenState extends State<HomeScreen> {
             children: [
               Expanded(
                 child: Text(label,
-                    style: const TextStyle(fontSize: 12, color: Colors.grey)),
+                    style: TextStyle(fontSize: 12, color: AppColors.muted)),
               ),
               Text(
                 last == null ? "—" : "${_format(last)} ${param?[4] ?? ""}",
-                style: const TextStyle(
+                style: TextStyle(
                     fontSize: 14,
                     fontWeight: FontWeight.bold,
-                    color: Color(0xFF35C28F)),
+                    color: AppColors.accent),
               ),
               const SizedBox(width: 8),
               GestureDetector(
                 onTap: () => _openChartDialog(key),
-                child: const Icon(Icons.open_in_full, size: 18, color: Colors.grey),
+                child: Icon(Icons.open_in_full, size: 18, color: AppColors.muted),
               ),
               const SizedBox(width: 12),
               GestureDetector(
@@ -1970,7 +2063,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     _chartData.remove(key);
                   });
                 },
-                child: const Icon(Icons.close, size: 18, color: Colors.grey),
+                child: Icon(Icons.close, size: 18, color: AppColors.muted),
               ),
             ],
           ),
@@ -2004,7 +2097,7 @@ class _HomeScreenState extends State<HomeScreen> {
             final last = points.isEmpty ? null : points.last.value;
 
             return Dialog(
-              backgroundColor: const Color(0xFF172029),
+              backgroundColor: AppColors.surface,
               insetPadding: const EdgeInsets.all(16),
               child: Padding(
                 padding: const EdgeInsets.all(16),
@@ -2016,15 +2109,15 @@ class _HomeScreenState extends State<HomeScreen> {
                       children: [
                         Expanded(
                           child: Text(label,
-                              style: const TextStyle(
+                              style: TextStyle(
                                   fontSize: 15, fontWeight: FontWeight.bold)),
                         ),
                         Text(
                           last == null ? "—" : "${_format(last)} ${param?[4] ?? ""}",
-                          style: const TextStyle(
+                          style: TextStyle(
                               fontSize: 15,
                               fontWeight: FontWeight.bold,
-                              color: Color(0xFF35C28F)),
+                              color: AppColors.accent),
                         ),
                       ],
                     ),
@@ -2035,24 +2128,24 @@ class _HomeScreenState extends State<HomeScreen> {
                           onPressed: () => setDialogState(() {
                             zoom = (zoom - 10) < 10 ? 10 : zoom - 10;
                           }),
-                          icon: const Icon(Icons.remove),
+                          icon: Icon(Icons.remove),
                           tooltip: "Крупнее",
                         ),
                         IconButton(
                           onPressed: () => setDialogState(() {
                             zoom = (zoom + 10) > chartMaxPoints ? chartMaxPoints : zoom + 10;
                           }),
-                          icon: const Icon(Icons.add),
+                          icon: Icon(Icons.add),
                           tooltip: "Больше точек",
                         ),
                         TextButton(
                           onPressed: () => setDialogState(() => zoom = chartMaxPoints),
-                          child: const Text("Вся история"),
+                          child: Text("Вся история"),
                         ),
                         const Spacer(),
                         TextButton(
                           onPressed: () => Navigator.pop(dialogContext),
-                          child: const Text("Закрыть"),
+                          child: Text("Закрыть"),
                         ),
                       ],
                     ),
@@ -2065,10 +2158,10 @@ class _HomeScreenState extends State<HomeScreen> {
                       ),
                     ),
                     const SizedBox(height: 8),
-                    const Text(
+                    Text(
                       "По оси X — время, по оси Y — значение параметра. "
                       "Кнопки − и + меняют масштаб.",
-                      style: TextStyle(fontSize: 12, color: Colors.grey),
+                      style: TextStyle(fontSize: 12, color: AppColors.muted),
                     ),
                   ],
                 ),
@@ -2087,20 +2180,19 @@ class _HomeScreenState extends State<HomeScreen> {
       width: double.infinity,
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: const Color(0xFF172029),
+        color: AppColors.surface,
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: const Color(0xFF26333F)),
+        border: Border.all(color: AppColors.border),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text("Блоки управления",
-              style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
+          Text("БЛОКИ УПРАВЛЕНИЯ", style: AppText.title),
           const SizedBox(height: 6),
-          const Text(
+          Text(
             "Читает ошибки из коробки и других блоков. "
             "Адреса блоков зависят от модели и года — часть может не ответить.",
-            style: TextStyle(fontSize: 12, color: Colors.grey),
+            style: TextStyle(fontSize: 12, color: AppColors.muted),
           ),
           const SizedBox(height: 10),
           Wrap(
@@ -2114,7 +2206,7 @@ class _HomeScreenState extends State<HomeScreen> {
               if (_moduleStatus.isNotEmpty)
                 Center(
                   child: Text(_moduleStatus,
-                      style: const TextStyle(fontSize: 12, color: Colors.grey)),
+                      style: TextStyle(fontSize: 12, color: AppColors.muted)),
                 ),
             ],
           ),
@@ -2124,22 +2216,22 @@ class _HomeScreenState extends State<HomeScreen> {
               margin: const EdgeInsets.only(top: 10),
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
-                color: const Color(0xFF1F2A35),
+                color: AppColors.nested,
                 borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: const Color(0xFF26333F)),
+                border: Border.all(color: AppColors.border),
               ),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
                     "${module["name"]} (${module["request"]} → ${module["response"]})",
-                    style: const TextStyle(
+                    style: TextStyle(
                         fontSize: 13, fontWeight: FontWeight.w600),
                   ),
                   const SizedBox(height: 6),
                   if (codes.isEmpty)
-                    const Text("Ошибок нет",
-                        style: TextStyle(fontSize: 12, color: Colors.grey))
+                    Text("Ошибок нет",
+                        style: TextStyle(fontSize: 12, color: AppColors.muted))
                   else
                     Wrap(
                       spacing: 6,
@@ -2149,13 +2241,13 @@ class _HomeScreenState extends State<HomeScreen> {
                                 padding: const EdgeInsets.symmetric(
                                     horizontal: 10, vertical: 4),
                                 decoration: BoxDecoration(
-                                  color: const Color(0x29E5484D),
+                                  color: AppColors.dangerBackground,
                                   borderRadius: BorderRadius.circular(999),
                                 ),
                                 child: Text(code,
-                                    style: const TextStyle(
+                                    style: TextStyle(
                                         fontSize: 12,
-                                        color: Color(0xFFFF9A9C),
+                                        color: AppColors.dangerText,
                                         fontWeight: FontWeight.bold)),
                               ))
                           .toList(),
@@ -2175,20 +2267,19 @@ class _HomeScreenState extends State<HomeScreen> {
       width: double.infinity,
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: const Color(0xFF172029),
+        color: AppColors.surface,
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: const Color(0xFF26333F)),
+        border: Border.all(color: AppColors.border),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text("Диагностика по симптомам",
-              style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
+          Text("ДИАГНОСТИКА ПО СИМПТОМАМ", style: AppText.title),
           const SizedBox(height: 6),
-          const Text(
+          Text(
             "Отметьте жалобы или скажите голосом — ИИ предположит причины. "
             "Адаптер не нужен.",
-            style: TextStyle(fontSize: 12, color: Colors.grey),
+            style: TextStyle(fontSize: 12, color: AppColors.muted),
           ),
           const SizedBox(height: 10),
           Wrap(
@@ -2197,7 +2288,7 @@ class _HomeScreenState extends State<HomeScreen> {
             children: symptomChoices.map((choice) {
               final selected = _symptoms.contains(choice);
               return FilterChip(
-                label: Text(choice, style: const TextStyle(fontSize: 12)),
+                label: Text(choice, style: TextStyle(fontSize: 12)),
                 selected: selected,
                 onSelected: (value) {
                   setState(() {
@@ -2217,7 +2308,7 @@ class _HomeScreenState extends State<HomeScreen> {
               ..selection = TextSelection.collapsed(offset: _symptomText.length),
             onChanged: (value) => _symptomText = value,
             maxLines: 2,
-            decoration: const InputDecoration(
+            decoration: InputDecoration(
               labelText: "Опишите проблему своими словами",
               border: OutlineInputBorder(),
               isDense: true,
@@ -2243,22 +2334,22 @@ class _HomeScreenState extends State<HomeScreen> {
             Padding(
               padding: const EdgeInsets.only(top: 10),
               child: Text(_symptomStatus,
-                  style: const TextStyle(
-                      fontSize: 12, color: Colors.orangeAccent)),
+                  style: TextStyle(
+                      fontSize: 12, color: AppColors.warning)),
             ),
           if (_symptomResult.isNotEmpty)
             Container(
               margin: const EdgeInsets.only(top: 10),
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
-                color: const Color(0xFF1F2A35),
+                color: AppColors.nested,
                 borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: const Color(0xFF26333F)),
+                border: Border.all(color: AppColors.border),
               ),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(_symptomResult, style: const TextStyle(fontSize: 13)),
+                  Text(_symptomResult, style: TextStyle(fontSize: 13)),
                   ..._symptomParts.map((part) {
                     final links = part["links"];
                     return Padding(
@@ -2267,10 +2358,10 @@ class _HomeScreenState extends State<HomeScreen> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text("• ${part["name"]}",
-                              style: const TextStyle(
+                              style: TextStyle(
                                   fontSize: 13,
                                   fontWeight: FontWeight.w600,
-                                  color: Color(0xFF35C28F))),
+                                  color: AppColors.accent)),
                           if (links is List)
                             Wrap(
                               spacing: 6,
@@ -2280,7 +2371,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                   onPressed: () => _openLink(entry["url"].toString()),
                                   child: Text(
                                     entry["label"].toString(),
-                                    style: const TextStyle(fontSize: 12),
+                                    style: TextStyle(fontSize: 12),
                                   ),
                                 );
                               }).toList(),
@@ -2305,19 +2396,18 @@ class _HomeScreenState extends State<HomeScreen> {
       width: double.infinity,
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: const Color(0xFF172029),
+        color: AppColors.surface,
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: const Color(0xFF26333F)),
+        border: Border.all(color: AppColors.border),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text("Облако и ИИ",
-              style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
+          Text("ОБЛАКО И ИИ", style: AppText.title),
           const SizedBox(height: 6),
           Text(
             _cloudStatus.isEmpty ? "Проверяю вход…" : _cloudStatus,
-            style: const TextStyle(fontSize: 12, color: Colors.grey),
+            style: TextStyle(fontSize: 12, color: AppColors.muted),
           ),
           const SizedBox(height: 10),
           Row(
@@ -2325,7 +2415,7 @@ class _HomeScreenState extends State<HomeScreen> {
               Expanded(
                 child: TextField(
                   controller: _modelController,
-                  decoration: const InputDecoration(
+                  decoration: InputDecoration(
                     labelText: "Модель (необязательно)",
                     hintText: "X-Trail",
                     border: OutlineInputBorder(),
@@ -2339,7 +2429,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 child: TextField(
                   controller: _yearController,
                   keyboardType: TextInputType.number,
-                  decoration: const InputDecoration(
+                  decoration: InputDecoration(
                     labelText: "Год",
                     hintText: "2013",
                     border: OutlineInputBorder(),
@@ -2357,7 +2447,7 @@ class _HomeScreenState extends State<HomeScreen> {
               if (!loggedIn)
                 ElevatedButton(
                   onPressed: _showAuthDialog,
-                  child: const Text("Войти / Регистрация"),
+                  child: Text("Войти / Регистрация"),
                 )
               else ...[
                 ElevatedButton(
@@ -2366,15 +2456,15 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
                 OutlinedButton(
                   onPressed: _openHistory,
-                  child: const Text("История"),
+                  child: Text("История"),
                 ),
                 OutlinedButton(
                   onPressed: _copyReport,
-                  child: const Text("Скопировать отчёт"),
+                  child: Text("Скопировать отчёт"),
                 ),
                 TextButton(
                   onPressed: _logout,
-                  child: const Text("Выйти"),
+                  child: Text("Выйти"),
                 ),
               ],
             ],
@@ -2383,37 +2473,37 @@ class _HomeScreenState extends State<HomeScreen> {
             Padding(
               padding: const EdgeInsets.only(top: 10),
               child: Text(_adviceStatus,
-                  style: const TextStyle(
-                      fontSize: 12, color: Colors.orangeAccent)),
+                  style: TextStyle(
+                      fontSize: 12, color: AppColors.warning)),
             ),
           if (_adviceText.isNotEmpty)
             Container(
               margin: const EdgeInsets.only(top: 10),
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
-                color: const Color(0xFF1F2A35),
+                color: AppColors.nested,
                 borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: const Color(0xFF26333F)),
+                border: Border.all(color: AppColors.border),
               ),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(_adviceText, style: const TextStyle(fontSize: 13)),
+                  Text(_adviceText, style: TextStyle(fontSize: 13)),
                   if (_advicePart.isNotEmpty)
                     Padding(
                       padding: const EdgeInsets.only(top: 8),
                       child: Text("Вероятная запчасть: $_advicePart",
-                          style: const TextStyle(
+                          style: TextStyle(
                               fontSize: 12,
-                              color: Color(0xFF35C28F),
+                              color: AppColors.accent,
                               fontWeight: FontWeight.w600)),
                     ),
                   if (_adviceCost.isNotEmpty)
                     Padding(
                       padding: const EdgeInsets.only(top: 4),
                       child: Text("Примерная стоимость: $_adviceCost",
-                          style: const TextStyle(
-                              fontSize: 12, color: Colors.grey)),
+                          style: TextStyle(
+                              fontSize: 12, color: AppColors.muted)),
                     ),
                 ],
               ),
@@ -2428,17 +2518,33 @@ class _HomeScreenState extends State<HomeScreen> {
       width: double.infinity,
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: const Color(0xFF172029),
+        color: AppColors.surface,
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: const Color(0xFF26333F)),
+        border: Border.all(color: AppColors.border),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text("Подключение к адаптеру",
-              style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
+          Text("ПОДКЛЮЧЕНИЕ", style: AppText.title),
           const SizedBox(height: 10),
           SegmentedButton<String>(
+            style: ButtonStyle(
+              backgroundColor: WidgetStateProperty.resolveWith((states) {
+                return states.contains(WidgetState.selected)
+                    ? AppColors.accent
+                    : AppColors.surface;
+              }),
+              foregroundColor: WidgetStateProperty.resolveWith((states) {
+                return states.contains(WidgetState.selected)
+                    ? AppColors.onAccent
+                    : AppColors.text;
+              }),
+              side: WidgetStateProperty.all(BorderSide(color: AppColors.border)),
+              shape: WidgetStateProperty.all(const StadiumBorder()),
+              textStyle: WidgetStateProperty.all(
+                const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+              ),
+            ),
             segments: const [
               ButtonSegment<String>(
                 value: "ble",
@@ -2468,32 +2574,37 @@ class _HomeScreenState extends State<HomeScreen> {
               onPressed: _scanning ? null : _startScan,
               child: Text(_scanning ? "Поиск…" : "Найти адаптер"),
             ),
+            const SizedBox(height: 6),
+            OutlinedButton(
+              onPressed: _startDemo,
+              child: const Text("Демо-режим — посмотреть без машины"),
+            ),
             const SizedBox(height: 10),
             if (_scanResults.isEmpty && !_scanning)
-              const Text(
+              Text(
                 "Нажмите кнопку, чтобы найти BLE-адаптер.\n"
                 "Если список пустой: включите Bluetooth и геолокацию "
                 "(на Android 11 и ниже она нужна для поиска), разрешите "
                 "приложению доступ к устройствам рядом.",
-                style: TextStyle(color: Colors.grey, fontSize: 12),
+                style: TextStyle(color: AppColors.muted, fontSize: 12),
               ),
             ..._scanResults.map((name) => ListTile(
                   leading:
-                      const Icon(Icons.bluetooth, color: Color(0xFF35C28F)),
+                      Icon(Icons.bluetooth, color: AppColors.accent),
                   title: Text(name),
                   onTap: () => _connectByName(name),
                 )),
           ] else ...[
-            const Text(
+            Text(
               "Адаптер Wi-Fi создаёт свою сеть (обычно WiFi_OBDII). "
               "Подключите телефон к ней, адрес оставьте как есть.",
-              style: TextStyle(fontSize: 12, color: Colors.grey),
+              style: TextStyle(fontSize: 12, color: AppColors.muted),
             ),
             const SizedBox(height: 10),
             TextField(
               controller: _wifiHostController,
               keyboardType: TextInputType.number,
-              decoration: const InputDecoration(
+              decoration: InputDecoration(
                 labelText: "IP-адрес адаптера",
                 border: OutlineInputBorder(),
               ),
@@ -2501,7 +2612,7 @@ class _HomeScreenState extends State<HomeScreen> {
             const SizedBox(height: 10),
             ElevatedButton(
               onPressed: _connectWifi,
-              child: const Text("Подключиться по Wi-Fi"),
+              child: Text("Подключиться по Wi-Fi"),
             ),
           ],
         ],
@@ -2518,7 +2629,7 @@ class LineChartPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    final background = Paint()..color = const Color(0xFF172029);
+    final background = Paint()..color = AppColors.surface;
     canvas.drawRRect(
       RRect.fromRectAndRadius(
         Rect.fromLTWH(0, 0, size.width, size.height),
@@ -2540,7 +2651,7 @@ class LineChartPainter extends CustomPainter {
     }
 
     final axisPaint = Paint()
-      ..color = const Color(0xFF2B3A47)
+      ..color = AppColors.border
       ..strokeWidth = 1
       ..style = PaintingStyle.stroke;
 
@@ -2554,7 +2665,7 @@ class LineChartPainter extends CustomPainter {
 
     if (points.length < 2) {
       _drawText(canvas, "Ждём данные…", Offset(padLeft + 8, padTop + plotHeight / 2),
-          const Color(0xFF92A5B7), 12);
+          AppColors.muted, 12);
       return;
     }
 
@@ -2594,7 +2705,7 @@ class LineChartPainter extends CustomPainter {
           Offset(padLeft, y),
           Offset(padLeft + plotWidth, y),
           Paint()
-            ..color = const Color(0xFF1F2A35)
+            ..color = AppColors.nested
             ..strokeWidth = 1,
         );
       }
@@ -2603,7 +2714,7 @@ class LineChartPainter extends CustomPainter {
         canvas,
         value.toStringAsFixed(digits),
         Offset(padLeft - 6, y),
-        const Color(0xFF92A5B7),
+        AppColors.muted,
         11,
         alignRight: true,
         centerVertically: true,
@@ -2622,7 +2733,7 @@ class LineChartPainter extends CustomPainter {
           Offset(x, padTop),
           Offset(x, padTop + plotHeight),
           Paint()
-            ..color = const Color(0xFF1F2A35)
+            ..color = AppColors.nested
             ..strokeWidth = 1,
         );
       }
@@ -2632,7 +2743,7 @@ class LineChartPainter extends CustomPainter {
         canvas,
         _formatClock(time),
         Offset(x, padTop + plotHeight + 6),
-        const Color(0xFF92A5B7),
+        AppColors.muted,
         11,
         alignCenter: i > 0 && i < timeLines,
         alignRight: i == timeLines,
@@ -2656,7 +2767,7 @@ class LineChartPainter extends CustomPainter {
     canvas.drawPath(
       path,
       Paint()
-        ..color = const Color(0xFF35C28F)
+        ..color = AppColors.accent
         ..strokeWidth = 2
         ..style = PaintingStyle.stroke
         ..strokeJoin = StrokeJoin.round,
@@ -2667,7 +2778,7 @@ class LineChartPainter extends CustomPainter {
     final lastX =
         padLeft + plotWidth * (lastPoint.time.millisecondsSinceEpoch - startMs) / timeSpan;
     final lastY = padTop + plotHeight - plotHeight * (lastPoint.value - min) / span;
-    canvas.drawCircle(Offset(lastX, lastY), 3.5, Paint()..color = const Color(0xFF35C28F));
+    canvas.drawCircle(Offset(lastX, lastY), 3.5, Paint()..color = AppColors.accent);
   }
 
   String _formatClock(DateTime time) {
