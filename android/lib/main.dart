@@ -277,6 +277,7 @@ class _HomeScreenState extends State<HomeScreen> {
   // --- Симптомы и голосовой ввод ---
   final Set<String> _symptoms = {};
   String _symptomText = "";
+  final TextEditingController _symptomController = TextEditingController();
   String _symptomStatus = "";
   String _symptomResult = "";
   List<Map<String, dynamic>> _symptomParts = [];
@@ -329,6 +330,7 @@ class _HomeScreenState extends State<HomeScreen> {
     _device?.disconnect();
     _wifi?.disconnect();
     _wifiHostController.dispose();
+    _symptomController.dispose();
     _modelController.dispose();
     _yearController.dispose();
     super.dispose();
@@ -1452,6 +1454,9 @@ class _HomeScreenState extends State<HomeScreen> {
         final text = result.recognizedWords;
         setState(() {
           _symptomText = text;
+          _symptomController.text = text;
+          _symptomController.selection =
+              TextSelection.collapsed(offset: text.length);
           _symptomStatus = result.finalResult ? "" : "Слушаю…";
         });
         if (result.finalResult) {
@@ -2288,8 +2293,19 @@ class _HomeScreenState extends State<HomeScreen> {
             children: symptomChoices.map((choice) {
               final selected = _symptoms.contains(choice);
               return FilterChip(
-                label: Text(choice, style: TextStyle(fontSize: 12)),
+                label: Text(
+                  choice,
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: selected ? AppColors.onAccent : AppColors.text,
+                  ),
+                ),
                 selected: selected,
+                showCheckmark: false,
+                backgroundColor: AppColors.surface,
+                selectedColor: AppColors.accent,
+                side: BorderSide(color: AppColors.border),
+                shape: const StadiumBorder(),
                 onSelected: (value) {
                   setState(() {
                     if (value) {
@@ -2304,8 +2320,7 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
           const SizedBox(height: 12),
           TextField(
-            controller: TextEditingController(text: _symptomText)
-              ..selection = TextSelection.collapsed(offset: _symptomText.length),
+            controller: _symptomController,
             onChanged: (value) => _symptomText = value,
             maxLines: 2,
             decoration: InputDecoration(
