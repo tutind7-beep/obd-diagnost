@@ -124,6 +124,18 @@ class ChartPoint {
 }
 
 /// Протоколы ELM327 в порядке проверки: сначала авто, затем самые частые
+/// Варианты протокола для ручного выбора в интерфейсе.
+const List<List<String>> protocolChoices = [
+  ["auto", "Автоматически"],
+  ["6", "CAN 11-бит, 500 кбод"],
+  ["7", "CAN 29-бит, 500 кбод"],
+  ["5", "KWP, быстрая инициализация"],
+  ["4", "KWP, 5 baud"],
+  ["3", "ISO 9141-2"],
+  ["1", "J1850 PWM"],
+  ["2", "J1850 VPW"],
+];
+
 const List<List<String>> _protocols = [
   ["0", "Автоопределение"],
   ["6", "CAN 11-бит, 500 кбод"],
@@ -254,6 +266,7 @@ class _HomeScreenState extends State<HomeScreen> {
   String _debug = ""; // последние сырые байты от адаптера
   String _cmdDebug = ""; // последний разобранный ответ
   String _protocolName = ""; // определённый протокол связи
+  String _protocolChoice = "auto"; // выбранный вручную протокол
   String _vin = ""; // VIN, прочитанный из ЭБУ
   String _detectedMake = ""; // марка, определённая по VIN
   List<String> _chartKeys = []; // параметры, для которых строятся графики
@@ -732,16 +745,33 @@ class _HomeScreenState extends State<HomeScreen> {
     await _command("ATH0");
     await Future.delayed(const Duration(milliseconds: 200));
 
+    // Адаптивное время ожидания: нужно для старых протоколов (KWP, ISO 9141)
+    await _command("ATAT1");
+
     // Автоподбор протокола: автоопределение работает не на всех машинах
     await _command("ATSP0");
-    await Future.delayed(const Duration(milliseconds: 250));
+    await Future.delayed(const Duration(milliseconds: 300));
+
+    final candidates = _protocolChoice == "auto"
+        ? _protocols
+        : _protocols.where((item) => item[0] == _protocolChoice).toList();
 
     var protocolFound = false;
-    for (final protocol in _protocols) {
+    for (final protocol in candidates) {
       await _command("ATSP${protocol[0]}");
-      await Future.delayed(const Duration(milliseconds: 250));
-      final answer =
-          await _command("0100", timeout: const Duration(seconds: 4));
+      // KWP и ISO 9141 инициализируют шину медленно — даём время
+      await Future.delayed(Duration(
+          milliseconds: protocol[0] == "5" || protocol[0] == "4" || protocol[0] == "3"
+              ? 700
+              : 300));
+
+      var answer =
+          await _command("0100", timeout: const Duration(seconds: 6));
+      // Шина ещё инициализируется — пробуем ещё раз
+      if (!answer.contains("41") && answer.toUpperCase().contains("BUS INIT")) {
+        await Future.delayed(const Duration(milliseconds: 700));
+        answer = await _command("0100", timeout: const Duration(seconds: 6));
+      }
       if (answer.contains("41")) {
         _log("Протокол: ${protocol[1]}");
         setState(() {
@@ -2705,6 +2735,35 @@ class _HomeScreenState extends State<HomeScreen> {
                     : "Нажмите «Найти адаптер»";
               });
             },
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Text("Протокол:", style: AppText.note),
+              const SizedBox(width: 10),
+              Expanded(
+                child: DropdownButton<String>(
+                  isExpanded: true,
+                  value: _protocolChoice,
+                  dropdownColor: AppColors.surface,
+                  items: protocolChoices
+                      .map((item) => DropdownMenuItem(
+                            value: item[0],
+                            child: Text(
+                              item[1],
+                              overflow: TextOverflow.ellipsis,
+                              style: AppText.body,
+                            ),
+                          ))
+                      .toList(),
+                  onChanged: (value) {
+                    if (value != null) {
+                      setState(() => _protocolChoice = value);
+                    }
+                  },
+                ),
+              ),
+            ],
           ),
           const SizedBox(height: 10),
           if (_transport == "ble") ...[
