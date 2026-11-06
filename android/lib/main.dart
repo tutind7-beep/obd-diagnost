@@ -647,7 +647,27 @@ class _HomeScreenState extends State<HomeScreen> {
   // ----------------------------------------------------------
   //  Отправка команды и ожидание ответа
   // ----------------------------------------------------------
+  Future<void> _commandQueue = Future<void>.value();
+
+  /// Отправляет команду адаптеру.
+  ///
+  /// Команды выполняются строго по одной: если послать две сразу, ответы
+  /// перемешиваются и связь «повисает» — именно это ломало данные при
+  /// сканировании блоков во время опроса параметров.
   Future<String> _command(String cmd,
+      {Duration timeout = const Duration(seconds: 3)}) {
+    final completer = Completer<String>();
+    _commandQueue = _commandQueue.then((_) async {
+      try {
+        completer.complete(await _commandNow(cmd, timeout: timeout));
+      } catch (error) {
+        completer.completeError(error);
+      }
+    });
+    return completer.future;
+  }
+
+  Future<String> _commandNow(String cmd,
       {Duration timeout = const Duration(seconds: 3)}) async {
     if (_transport == "wifi") {
       final wifi = _wifi;
@@ -958,6 +978,7 @@ class _HomeScreenState extends State<HomeScreen> {
   //  Чтение кодов ошибок
   // ----------------------------------------------------------
   Future<void> _readDtc() async {
+    _pausePolling();
     setState(() => _status = "Читаю ошибки…");
     final answer = await _command("03", timeout: const Duration(seconds: 4));
     final codes = <String>[];
@@ -979,10 +1000,15 @@ class _HomeScreenState extends State<HomeScreen> {
       _dtcCodes = codes.toSet().toList();
       _status = "Подключено";
     });
+
+    if (_connected) {
+      _startPolling();
+    }
   }
 
   /// Стирает коды ошибок из блоков управления (режим 04).
   Future<void> _clearDtc() async {
+    _pausePolling();
     setState(() => _status = "Стираю ошибки…");
     final answer = await _command("04", timeout: const Duration(seconds: 6));
     final text = answer.replaceAll(RegExp(r"\s"), "").toUpperCase();
@@ -997,6 +1023,10 @@ class _HomeScreenState extends State<HomeScreen> {
     if (ok) {
       await _readPids();
     }
+
+    if (_connected) {
+      _startPolling();
+    }
   }
 
   String _decodeDtc(int first, int second) {
@@ -1008,6 +1038,11 @@ class _HomeScreenState extends State<HomeScreen> {
     final d3 = (second >> 4) & 0x0F;
     final d4 = second & 0x0F;
     return "$letter$d1$d2$d3$d4";
+  }
+
+  /// Временно останавливает опрос параметров.
+  void _pausePolling() {
+    _pollTimer?.cancel();
   }
 
   void _startPolling() {
@@ -1289,7 +1324,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
     final codes = <String>[];
     try {
-      final answer = await _command("1902FF", timeout: const Duration(seconds: 4));
+      final answer = await _command("1902FF", timeout: const Duration(seconds: 3));
       codes.addAll(_parseUdsCodes(answer));
       if (codes.isEmpty) {
         final fallback = await _command("03", timeout: const Duration(seconds: 3));
@@ -1363,26 +1398,48 @@ class _HomeScreenState extends State<HomeScreen> {
     });
     _log("Сканирование блоков: ${defaultModules.length} адресов");
 
-    final found = <Map<String, dynamic>>[];
-    for (final module in defaultModules) {
-      final name = module[0];
-      final requestId = module[1];
-      final responseId = module[2];
+    // Пока идёт сканирование, опрос параметров останавливаем:
+    // иначе команды мешают друг другу и данные «пропадают».
+    _pausePolling();
 
-      try {
-        final codes = await _readModuleCodes(requestId, responseId);
-        _log("Блок $name ($requestId): ${codes.isEmpty ? "нет кодов" : codes.join(", ")}");
-        found.add({
-          "name": name,
-          "request": requestId,
-          "response": responseId,
-          "codes": codes,
-        });
-      } catch (error) {
-        _log("Блок $name ($requestId): ошибка $error");
+    final found = <Map<String, dynamic>>[];
+    try {
+      for (var index = 0; index < defaultModules.length; index++) {
+        final module = defaultModules[index];
+        final name = module[0];
+        final requestId = module[1];
+        final responseId = module[2];
+
+        if (mounted) {
+          setState(() =>
+              _moduleStatus = "Блок ${index + 1} из ${defaultModules.length}: $name");
+        }
+
+        if (!_connected) {
+          _log("Связь потеряна — сканирование остановлено");
+          break;
+        }
+
+        try {
+          final codes = await _readModuleCodes(requestId, responseId);
+          _log("Блок $name ($requestId): ${codes.isEmpty ? "нет кодов" : codes.join(", ")}");
+          found.add({
+            "name": name,
+            "request": requestId,
+            "response": responseId,
+            "codes": codes,
+          });
+        } catch (error) {
+          _log("Блок $name ($requestId): ошибка $error");
+        }
       }
+    } finally {
+      await _restoreLink();
     }
 
+    if (!mounted) {
+      return;
+    }
     setState(() {
       _modules = found;
       _moduleBusy = false;
@@ -1390,6 +1447,33 @@ class _HomeScreenState extends State<HomeScreen> {
           ? "Ни один блок не ответил"
           : "Ответили блоков: ${found.length}";
     });
+
+    if (_connected) {
+      _startPolling();
+    }
+  }
+
+  /// Возвращает адаптер к обычному режиму после работы с блоками.
+  ///
+  /// Сканирование меняет адреса и фильтры адаптера. Если их не сбросить,
+  /// ответы на обычные параметры перестают приходить.
+  Future<void> _restoreLink() async {
+    await _command("ATFCSM0");
+    await _command("ATCRA");
+    await _command("ATCAF1");
+    await _command("ATSH7DF");
+
+    final check = await _command("0100", timeout: const Duration(seconds: 3));
+    if (check.contains("41")) {
+      _log("Связь восстановлена");
+      return;
+    }
+
+    _log("Связь потеряна — повторная инициализация");
+    final ready = await _initialize();
+    if (!ready) {
+      _log("Восстановить связь не удалось");
+    }
   }
 
   // ----------------------------------------------------------
@@ -2628,6 +2712,16 @@ class _HomeScreenState extends State<HomeScreen> {
             ElevatedButton(
               onPressed: _connectWifi,
               child: Text("Подключиться по Wi-Fi"),
+            ),
+          ],
+          if (_connected) ...[
+            const SizedBox(height: 10),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton(
+                onPressed: _restoreLink,
+                child: const Text("Восстановить связь"),
+              ),
             ),
           ],
         ],
