@@ -716,6 +716,16 @@ class _HomeScreenState extends State<HomeScreen> {
 
   /// Готовит адаптер к работе. Возвращает false, если ЭБУ не отвечает.
   Future<bool> _initialize() async {
+    // Сбрасываем всё, что могло остаться от сканирования блоков:
+    // форсированную отправку, фильтры приёма и заголовки. Если их не снять,
+    // адаптер отвечает NO DATA на любые запросы.
+    await _command("ATFCSM0");
+    await _command("ATCAF1");
+    await _command("ATCRA");
+    await _command("ATAR");
+    await _command("ATSH7DF");
+    await _command("ATPC");
+
     // Без ATZ: сброс рвёт BLE-соединение у многих адаптеров
     await _command("ATE0");
     await _command("ATL0");
@@ -744,12 +754,17 @@ class _HomeScreenState extends State<HomeScreen> {
     }
 
     if (!protocolFound) {
-      _log("Протокол не определён: машина не отвечает");
+      final version = await _command("ATI", timeout: const Duration(seconds: 3));
+      final adapterAlive = version.toUpperCase().contains("ELM") ||
+          version.toUpperCase().contains("OBD");
+      _log("Протокол не определён. Адаптер отвечает: $adapterAlive ($version)");
       setState(() {
         _protocolName = "";
-        _status = "Адаптер подключён, но машина не отвечает. "
-            "Проверьте: зажигание включено? Адаптер вставлен в разъём OBD-II "
-            "до щелчка? Машина поддерживает OBD-II (после 2001 года)?";
+        _status = adapterAlive
+            ? "Адаптер отвечает, но машина молчит. Проверьте, что зажигание "
+                "включено. Если не поможет — нажмите «Сброс адаптера»."
+            : "Адаптер не отвечает на команды. Выдерните его из разъёма "
+                "OBD-II на 10 секунд, вставьте снова и подключитесь заново.";
       });
       return false;
     }
@@ -1315,12 +1330,14 @@ class _HomeScreenState extends State<HomeScreen> {
   // ----------------------------------------------------------
   /// Читает коды из одного блока по адресам запроса и ответа.
   Future<List<String>> _readModuleCodes(String requestId, String responseId) async {
+    // Force CAN send (ATFCSM1) не используем: многие клоны ELM327 после него
+    // зависают и перестают отвечать на обычные запросы (NO DATA).
+    await _command("ATFCSM0");
+    await _command("ATCAF1");
+    await _command("ATSH7DF");
+    await _command("ATCRA");
     await _command("ATSH$requestId");
     await _command("ATCRA$responseId");
-    await _command("ATCAF1");
-    await _command("ATFCSH$requestId");
-    await _command("ATFCSD300000");
-    await _command("ATFCSM1");
 
     final codes = <String>[];
     try {
@@ -1331,10 +1348,10 @@ class _HomeScreenState extends State<HomeScreen> {
         codes.addAll(_parseMode03Codes(fallback));
       }
     } finally {
-      await _command("ATFCSM0");
       await _command("ATCRA");
       await _command("ATSH7DF");
       await _command("ATCAF1");
+      await _command("ATAR");
     }
     return codes.toSet().toList();
   }
@@ -1449,6 +1466,28 @@ class _HomeScreenState extends State<HomeScreen> {
     });
 
     if (_connected) {
+      _startPolling();
+    }
+  }
+
+  /// Полный сброс настроек адаптера: убирает «залипание» после сканирования.
+  Future<void> _resetAdapter() async {
+    _pausePolling();
+    setState(() => _status = "Сбрасываю настройки адаптера…");
+    await _command("ATFCSM0");
+    await _command("ATCAF1");
+    await _command("ATCRA");
+    await _command("ATAR");
+    await _command("ATSH7DF");
+    await _command("ATPC");
+    await _command("ATSP0");
+
+    final ready = await _initialize();
+    if (!mounted) {
+      return;
+    }
+    if (ready) {
+      setState(() => _status = "Подключено");
       _startPolling();
     }
   }
@@ -2721,6 +2760,14 @@ class _HomeScreenState extends State<HomeScreen> {
               child: OutlinedButton(
                 onPressed: _restoreLink,
                 child: const Text("Восстановить связь"),
+              ),
+            ),
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton(
+                onPressed: _resetAdapter,
+                child: const Text("Сброс адаптера"),
               ),
             ),
           ],

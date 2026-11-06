@@ -63,9 +63,29 @@ class WifiObd {
       await _waiter!.future.timeout(timeout);
       return _buffer.toString();
     } on TimeoutException {
-      return _buffer.toString();
+      final partial = _buffer.toString();
+      // Прерываем «зависшую» операцию адаптера (например, BUS INIT):
+      // иначе следующая команда оборвёт её и получит «STOPPED».
+      await _resync(socket);
+      return partial;
     } finally {
       _waiter = null;
+    }
+  }
+
+  /// Освобождает адаптер после таймаута: `ATI` отвечает мгновенно и не
+  /// обращается к шине автомобиля.
+  Future<void> _resync(Socket socket) async {
+    _buffer.clear();
+    _waiter = Completer<void>();
+    try {
+      socket.write("ATI\r");
+      await _waiter!.future.timeout(const Duration(milliseconds: 1500));
+    } on TimeoutException {
+      // Адаптер молчит — на следующей команде попробуем снова.
+    } finally {
+      _waiter = null;
+      _buffer.clear();
     }
   }
 
